@@ -23,6 +23,11 @@ CREATE TABLE IF NOT EXISTS consumer_contract(id TEXT PRIMARY KEY,critical INTEGE
 CREATE TABLE IF NOT EXISTS consumer_ack(id INTEGER PRIMARY KEY,consumer_id TEXT REFERENCES consumer_contract(id),run_id INTEGER REFERENCES replay_run(id),sequence INTEGER NOT NULL,status TEXT NOT NULL,source_digest TEXT NOT NULL,UNIQUE(consumer_id,sequence));
 CREATE TABLE IF NOT EXISTS release_gate(id INTEGER PRIMARY KEY,audit_id INTEGER REFERENCES cutover_audit(id),run_id INTEGER REFERENCES replay_run(id),status TEXT NOT NULL,reason TEXT NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS release_member(gate_id INTEGER REFERENCES release_gate(id),consumer_id TEXT REFERENCES consumer_contract(id),status TEXT NOT NULL,ack_id INTEGER REFERENCES consumer_ack(id),PRIMARY KEY(gate_id,consumer_id));
+CREATE TABLE IF NOT EXISTS schema_version(version TEXT PRIMARY KEY,effective_watermark INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS schema_field(version TEXT NOT NULL,field TEXT NOT NULL,required INTEGER NOT NULL DEFAULT 1,PRIMARY KEY(version,field));
+CREATE TABLE IF NOT EXISTS field_mapping(id INTEGER PRIMARY KEY,source_version TEXT NOT NULL,target_version TEXT NOT NULL,source_field TEXT,target_field TEXT NOT NULL,kind TEXT NOT NULL,value TEXT,UNIQUE(source_version,target_version,target_field));
+CREATE TABLE IF NOT EXISTS key_schema(run_id INTEGER NOT NULL REFERENCES replay_run(id),key TEXT NOT NULL,baseline_schema TEXT,event_schema TEXT,target_schema TEXT,before_status TEXT NOT NULL,PRIMARY KEY(run_id,key));
+CREATE TABLE IF NOT EXISTS field_trace(id INTEGER PRIMARY KEY,run_id INTEGER NOT NULL REFERENCES replay_run(id),key TEXT NOT NULL,field TEXT NOT NULL,source_field TEXT,chain TEXT NOT NULL);
 """
 def connect(path):
     p=Path(path);p.parent.mkdir(parents=True,exist_ok=True)

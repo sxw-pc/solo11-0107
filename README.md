@@ -8,4 +8,6 @@
 
 同一事务的 change 必须全部落在 begin 与 commit 之间。回放按提交顺序先在内存中验证整组变更，任一 before、键别名或删除/重建规则失败时，整组都不发布，所有受影响业务键均判为无法判定。这防止同一事务中部分键已更新、另一键失败却仍出具确定结论。`pytest` 固定从本仓 `src` 导入源码，避免误测系统中旧版安装包。
 
+schema 版本图按水位生效：`register_schema` 声明版本字段集与生效水位，`register_mapping` 声明字段级 identity/rename/default/确定类型转换（如 int_to_str、str_to_int，按值判定无损）。`replay(..., strategy=..., target_schema=...)` 提供两种合规切换策略：hard 要求基线、事件、目标 schema 完全一致，任何版本差异阻止整次切换（schema_version_blocked）；compatible 只对声明无损映射的字段放行——跨 schema 事件的 before 按当前行 schema 校验，after 的每个字段必须被映射链完整解释（rename/default/convert 值严格确定，仅 identity 字段允许同事务改值），同一事务的字段转换与 before 校验先在临时行全部成功再原子提交。无法投影的 key 判无法判定，不把旧值或缺字段当作 null/删除，无关 key 保持确定。此类运行的决策标记规则版本 2，报告逐 key 列出 schema 版本、字段来源、映射链与 before 校验结果。
+
 基线快照第一次导入后连同字节哈希、水位和 schema 版本一起冻结；相同字节可重跑，改动任一契约项会拒绝。同一事务即使冲突发生在没有业务键的 commit 事件，也会使该事务所有受影响键无法判定。报告中的问题和被排除事务按 ReplayRun 固定，后续回放不会改写旧报告的范围。
