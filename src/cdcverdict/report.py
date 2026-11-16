@@ -6,9 +6,9 @@ def write(path,run,out):
     data={'run':dict(db.execute('SELECT * FROM replay_run WHERE id=?',(run,)).fetchone()),
       'decisions':[dict(x) for x in db.execute('SELECT * FROM decision WHERE run_id=? ORDER BY key',(run,))],
       'evidence':[dict(x) for x in db.execute('SELECT * FROM evidence WHERE run_id=? ORDER BY id',(run,))],
-      'issues':[dict(x) for x in db.execute('SELECT * FROM issue ORDER BY id')],
+      'issues':[dict(x) for x in db.execute('SELECT i.* FROM issue i JOIN run_issue ri ON ri.issue_id=i.id WHERE ri.run_id=? ORDER BY i.id',(run,))],
       'sources':[dict(x) for x in db.execute('SELECT id,path,sha FROM source_file ORDER BY id')],
-      'excluded_transactions':[r['id'] for r in db.execute('SELECT id FROM txn WHERE commit_seq > (SELECT watermark FROM replay_run WHERE id=?)',(run,))]}
+      'excluded_transactions':[r['txn_id'] for r in db.execute('SELECT txn_id FROM run_exclusion WHERE run_id=? ORDER BY txn_id',(run,))]}
     expected={r['key']:r['value'] for r in db.execute('SELECT * FROM expected')}
     actual={r['key']:r['value'] for r in data['decisions'] if r['status']=='存在'}
     data['expected_differences']=[k for k in sorted(set(expected)|set(actual)) if expected.get(k)!=actual.get(k)] if expected else []

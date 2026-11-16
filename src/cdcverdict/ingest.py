@@ -10,15 +10,20 @@ def source(db,path):
     sid=db.execute('INSERT INTO source_file(path,sha,raw) VALUES (?,?,?)',(str(path),h,raw)).lastrowid
     return sid,False
 def snapshot(path,db_path,watermark,schema='v1'):
-    db=connect(db_path);records=[json.loads(s) for s in Path(path).read_text(encoding='utf-8').splitlines() if s.strip()]
+    raw=Path(path).read_bytes();db=connect(db_path)
+    records=[json.loads(s) for s in raw.decode('utf-8').splitlines() if s.strip()]
     validate_snapshot(records,watermark,schema)
     with db:
-        old=db.execute('SELECT MAX(watermark) FROM snapshot_row').fetchone()[0]
-        if old is not None and watermark<old:raise ValueError('watermark_regression')
-        sid,duplicate=source(db,path)
-        if not duplicate and old is not None:raise ValueError('snapshot_already_frozen')
-        for r in records:
-            db.execute('INSERT OR IGNORE INTO snapshot_row VALUES (?,?,?,?,?)',(str(r['key']),json.dumps(r['value'],sort_keys=True),watermark,schema,sid))
+        frozen=db.execute('SELECT s.watermark,s.schema_version,f.sha FROM snapshot_row s JOIN source_file f ON f.id=s.source_id LIMIT 1').fetchone()
+        if frozen:
+            if watermark<frozen['watermark']:raise ValueError('watermark_regression')
+            if watermark!=frozen['watermark'] or schema!=frozen['schema_version'] or sha(raw)!=frozen['sha']:
+                raise ValueError('snapshot_contract_changed')
+        else:
+            sid,duplicate=source(db,path)
+            if duplicate:raise ValueError('source_already_used')
+            for r in records:
+                db.execute('INSERT INTO snapshot_row VALUES (?,?,?,?,?)',(str(r['key']),json.dumps(r['value'],sort_keys=True),watermark,schema,sid))
     db.close();return len(records)
 def ingest(path,db_path):
     db=connect(db_path);count=0
