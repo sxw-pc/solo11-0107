@@ -13,3 +13,5 @@
 目标切换核对是独立的业务链：`target-import` 冻结目标副本的原始字节和水位，`cutover-audit` 将目标逐键状态与指定回放运行比较，持久记录缺失、额外或值不同的行，并输出 ready、lagging、divergent 或 unknown。归档的回放报告并不能替代目标副本一致性结论。
 
 下游采用决策由 `consumer-contract`、`consumer-ack` 和 `release-gate` 执行。关键消费者的最低水位与对目标来源哈希的接受回执均须满足；目标在审计后变化会阻断切换。合同、回执和每次闸门的成员状态保存在 SQLite 中。`demo-decisions` 可运行一个目标一致且消费者已接受的完整样例。测试还覆盖目标落后、值分歧、缺失/拒绝回执、重复回执冲突和审计后目标变化。
+
+目标有实际差异时，可用 `repair-plan` 导入逐键决议清单，然后以 `repair-apply` 生成写时复制的新目标快照。每个差异键必须明确选择 `restore_replay`、`accept_target` 或 `defer` 并给出理由；清单、逐键原值与期望值、结果快照均保存在 SQLite。接受目标差异或暂缓处理不会伪装成目标一致；只恢复部分键会留下可再次审计的剩余差异。审计后的目标被修改时修复拒绝应用。`repair-report` 展示决议与结果，`demo-repair` 演示分两次修复额外目标行并复核至 ready。新快照有新的来源哈希，旧消费者回执不能使它通过 release gate。

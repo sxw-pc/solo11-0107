@@ -1,0 +1,4 @@
+[
+  {"key":"A","decision":"restore_replay","reason":"replay evidence has confirmed transaction"},
+  {"key":"B","decision":"accept_target","reason":"business owner needs to investigate extra row"}
+]
