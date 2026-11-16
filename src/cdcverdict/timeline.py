@@ -17,7 +17,8 @@ def transactions(db,watermark):
             db.execute('INSERT INTO issue(code,detail) VALUES (?,?)',('txn_incomplete',tx));bad.update(e['key'] for e in changes if e['key']);continue
         if commit_seq>watermark:excluded.append(tx);continue
         accepted.append((commit_seq,tx,sorted(changes,key=lambda e:e['seq'])))
-    seqs=sorted({e['seq'] for e in events if e['seq']<=watermark})
+    floor=db.execute('SELECT MAX(floor) FROM retention_compaction').fetchone()[0]
+    seqs=sorted({e['seq'] for e in events if e['seq']<=watermark and (floor is None or e['seq']>=floor)})
     if seqs and any(b-a>1 for a,b in zip(seqs,seqs[1:])):
         bad.update(e['key'] for _,_,group in accepted for e in group if e['key'])
     return sorted(accepted,key=lambda item:(item[0],item[1])),bad,excluded
