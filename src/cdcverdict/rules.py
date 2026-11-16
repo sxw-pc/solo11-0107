@@ -3,6 +3,10 @@ from .store import connect
 from .timeline import transactions
 from .identity import resolve,add_alias
 VERSION='1'
+def archive(db,run,verified):
+    if not verified:return False
+    if db.execute("SELECT 1 FROM decision WHERE run_id=? AND status='无法判定' LIMIT 1",(run,)).fetchone():return False
+    return db.execute("UPDATE replay_run SET status='已归档' WHERE id=? AND status IN ('已判定','待核')",(run,)).rowcount>0
 def replay(path,watermark,allow_recreate=True):
     db=connect(path);out={}
     with db:

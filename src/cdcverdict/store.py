@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS consumer_contract(id TEXT PRIMARY KEY,critical INTEGE
 CREATE TABLE IF NOT EXISTS consumer_ack(id INTEGER PRIMARY KEY,consumer_id TEXT REFERENCES consumer_contract(id),run_id INTEGER REFERENCES replay_run(id),sequence INTEGER NOT NULL,status TEXT NOT NULL,source_digest TEXT NOT NULL,UNIQUE(consumer_id,sequence));
 CREATE TABLE IF NOT EXISTS release_gate(id INTEGER PRIMARY KEY,audit_id INTEGER REFERENCES cutover_audit(id),run_id INTEGER REFERENCES replay_run(id),status TEXT NOT NULL,reason TEXT NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS release_member(gate_id INTEGER REFERENCES release_gate(id),consumer_id TEXT REFERENCES consumer_contract(id),status TEXT NOT NULL,ack_id INTEGER REFERENCES consumer_ack(id),PRIMARY KEY(gate_id,consumer_id));
+CREATE TABLE IF NOT EXISTS report_batch(id INTEGER PRIMARY KEY,run_id INTEGER NOT NULL REFERENCES replay_run(id),generation INTEGER NOT NULL,contract TEXT NOT NULL,status TEXT NOT NULL,digest TEXT NOT NULL,missing TEXT NOT NULL DEFAULT '[]',staged_dir TEXT,published_dir TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(run_id,generation));
+CREATE TABLE IF NOT EXISTS report_member(batch_id INTEGER NOT NULL REFERENCES report_batch(id),name TEXT NOT NULL,path TEXT NOT NULL,sha TEXT NOT NULL,status TEXT NOT NULL,PRIMARY KEY(batch_id,name));
 """
 def connect(path):
     p=Path(path);p.parent.mkdir(parents=True,exist_ok=True)
