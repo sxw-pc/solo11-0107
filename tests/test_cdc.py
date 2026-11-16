@@ -120,5 +120,6 @@ def test_historical_run_keeps_its_own_issues_and_exclusions(tmp_path):
     assert later!=early
 def test_sequence_gap_is_uncertain(tmp_path):
     db=base(tmp_path);rows=tx();rows[1]['seq']=8;rows[2]['seq']=9
+    rows.insert(2,{'kind':'change','txn':'T1','seq':10,'key':'A','action':'update','before':2,'after':3})
     events(tmp_path,db,rows)
-    assert replay(db,9)[1]['A']=='无法判定'
+    assert replay(db,10)[1]['A']=='无法判定'

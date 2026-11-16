@@ -6,6 +6,34 @@ from .report import write
 from .cutover import import_target,audit_target,configure_consumers,acknowledge,release_decision
 from .repair import plan_repair,apply_repair,repair_report
 from .store import connect
+from .contract import IMMEDIATE,DEFERRED
+def _multitable_contract(mode):
+    return {'schema':'v2','tables':{'parent':{'key_field':'id'},'child':{'key_field':'id'}},
+            'references':[{'child':{'table':'child','field':'parent_id'},
+                           'parent':{'table':'parent','field':'id'},'mode':mode}]}
+def _multitable_inputs(root,mode,parent_only=False):
+    contract=root/'contract.json';contract.write_text(json.dumps(_multitable_contract(mode)),encoding='utf-8')
+    base=root/'base.jsonl';base.write_text('\n'.join(json.dumps(x) for x in [
+      {'table':'parent','key':'P','value':{'id':'P'}},
+      {'table':'child','key':'C','value':{'id':'C','parent_id':'P'}}]),encoding='utf-8')
+    changes=[{'kind':'change','txn':'T','seq':2,'table':'parent','key':'P','action':'delete','before':{'id':'P'},'after':None}]
+    if not parent_only:
+        changes.append({'kind':'change','txn':'T','seq':3,'table':'child','key':'C','action':'delete','before':{'id':'C','parent_id':'P'},'after':None})
+    changes.append({'kind':'commit','txn':'T','seq':4})
+    events=root/'events.jsonl';events.write_text('\n'.join(json.dumps(x) for x in
+      [{'kind':'begin','txn':'T','seq':1},*changes]),encoding='utf-8')
+    return contract,base,events
+def multitable_demo(mode,workdir=None,parent_only=False):
+    if mode not in (IMMEDIATE,DEFERRED):raise ValueError('invalid_reference_mode')
+    root=Path(workdir or tempfile.mkdtemp(prefix=f'cdcverdict-multi-{mode}-'));root.mkdir(parents=True,exist_ok=True)
+    contract,base,events=_multitable_inputs(root,mode,parent_only)
+    db=root/'data.db'
+    spec=json.loads(contract.read_text(encoding='utf-8'))
+    snapshot(base,db,0,schema=spec['schema'],contract_spec=spec)
+    ingest(events,db)
+    run,out,excluded=replay(db,4)
+    return {'mode':mode,'parent_only':parent_only,'run':run,'verdicts':{f'{table}:{key}':status for (table,key),status in out.items()},
+            'excluded':excluded,'db':str(db)}
 def demo(workdir=None):
     root=Path(workdir or tempfile.mkdtemp(prefix='cdcverdict-'));root.mkdir(parents=True,exist_ok=True)
     base=root/'base.jsonl';base.write_text(json.dumps({'key':'A','value':{'n':1}}),encoding='utf-8')
@@ -45,9 +73,10 @@ def repair_demo(workdir=None):
 def main():
     p=argparse.ArgumentParser(description='离线 CDC 事务回放与可见性裁定');s=p.add_subparsers(dest='cmd',required=True)
     d=s.add_parser('demo');d.add_argument('--workdir')
+    dm=s.add_parser('demo-multitable');dm.add_argument('mode',choices=(IMMEDIATE,DEFERRED));dm.add_argument('--workdir');dm.add_argument('--parent-only',action='store_true')
     dd=s.add_parser('demo-decisions');dd.add_argument('--workdir')
     dr=s.add_parser('demo-repair');dr.add_argument('--workdir')
-    i=s.add_parser('init');i.add_argument('snapshot');i.add_argument('--db',required=True);i.add_argument('--watermark',type=int,required=True)
+    i=s.add_parser('init');i.add_argument('snapshot');i.add_argument('--db',required=True);i.add_argument('--watermark',type=int,required=True);i.add_argument('--contract')
     g=s.add_parser('ingest');g.add_argument('events');g.add_argument('--db',required=True)
     v=s.add_parser('verdict');v.add_argument('--db',required=True);v.add_argument('--watermark',type=int,required=True)
     r=s.add_parser('report');r.add_argument('--db',required=True);r.add_argument('--run',type=int,required=True);r.add_argument('--out',required=True)
@@ -61,9 +90,13 @@ def main():
     rr=s.add_parser('repair-report');rr.add_argument('--db',required=True);rr.add_argument('--plan',type=int,required=True)
     a=p.parse_args()
     if a.cmd=='demo':print(demo(a.workdir))
+    elif a.cmd=='demo-multitable':print(json.dumps(multitable_demo(a.mode,a.workdir,a.parent_only),ensure_ascii=False))
     elif a.cmd=='demo-decisions':print(decision_demo(a.workdir))
     elif a.cmd=='demo-repair':print(repair_demo(a.workdir))
-    elif a.cmd=='init':print(snapshot(a.snapshot,a.db,a.watermark))
+    elif a.cmd=='init':
+        spec=json.loads(Path(a.contract).read_text(encoding='utf-8')) if a.contract else None
+        schema=spec['schema'] if spec else 'v1'
+        print(snapshot(a.snapshot,a.db,a.watermark,schema=schema,contract_spec=spec))
     elif a.cmd=='ingest':print(ingest(a.events,a.db))
     elif a.cmd=='verdict':print(replay(a.db,a.watermark))
     elif a.cmd=='report':print(write(a.db,a.run,a.out))
