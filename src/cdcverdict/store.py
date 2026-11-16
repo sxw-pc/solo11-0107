@@ -1,6 +1,7 @@
 import sqlite3
 from pathlib import Path
-SCHEMA="""
+
+SCHEMA = """
 PRAGMA foreign_keys=ON;
 CREATE TABLE IF NOT EXISTS source_file(id INTEGER PRIMARY KEY,path TEXT,sha TEXT UNIQUE,raw BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS snapshot_row(key TEXT PRIMARY KEY,value TEXT NOT NULL,watermark INTEGER NOT NULL,schema_version TEXT NOT NULL,source_id INTEGER REFERENCES source_file(id));
@@ -23,12 +24,38 @@ CREATE TABLE IF NOT EXISTS consumer_contract(id TEXT PRIMARY KEY,critical INTEGE
 CREATE TABLE IF NOT EXISTS consumer_ack(id INTEGER PRIMARY KEY,consumer_id TEXT REFERENCES consumer_contract(id),run_id INTEGER REFERENCES replay_run(id),sequence INTEGER NOT NULL,status TEXT NOT NULL,source_digest TEXT NOT NULL,UNIQUE(consumer_id,sequence));
 CREATE TABLE IF NOT EXISTS release_gate(id INTEGER PRIMARY KEY,audit_id INTEGER REFERENCES cutover_audit(id),run_id INTEGER REFERENCES replay_run(id),status TEXT NOT NULL,reason TEXT NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS release_member(gate_id INTEGER REFERENCES release_gate(id),consumer_id TEXT REFERENCES consumer_contract(id),status TEXT NOT NULL,ack_id INTEGER REFERENCES consumer_ack(id),PRIMARY KEY(gate_id,consumer_id));
-CREATE TABLE IF NOT EXISTS repair_plan(id INTEGER PRIMARY KEY,audit_id INTEGER REFERENCES cutover_audit(id),manifest_sha TEXT NOT NULL,raw BLOB NOT NULL,status TEXT NOT NULL,output_target_id INTEGER REFERENCES target_snapshot(id),result TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(audit_id,manifest_sha));
+CREATE TABLE IF NOT EXISTS repair_plan(id INTEGER PRIMARY KEY,audit_id INTEGER REFERENCES cutover_audit(id),manifest_sha TEXT NOT NULL,raw BLOB NOT NULL,status TEXT NOT NULL,output_target_id INTEGER REFERENCES target_snapshot(id),result TEXT,scope_kind TEXT NOT NULL DEFAULT 'full',audit_digest TEXT,base_target_id INTEGER REFERENCES target_snapshot(id),base_target_digest TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(audit_id,manifest_sha));
 CREATE TABLE IF NOT EXISTS repair_choice(plan_id INTEGER REFERENCES repair_plan(id),key TEXT NOT NULL,decision TEXT NOT NULL,reason TEXT NOT NULL,replay_value TEXT,target_value TEXT,PRIMARY KEY(plan_id,key));
+CREATE TABLE IF NOT EXISTS repair_merge(id INTEGER PRIMARY KEY,audit_id INTEGER REFERENCES cutover_audit(id),run_id INTEGER REFERENCES replay_run(id),base_target_id INTEGER REFERENCES target_snapshot(id),base_target_digest TEXT NOT NULL,audit_digest TEXT NOT NULL,plan_set_sha TEXT NOT NULL UNIQUE,status TEXT NOT NULL,reason TEXT NOT NULL,output_target_id INTEGER REFERENCES target_snapshot(id),output_digest TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS repair_merge_member(merge_id INTEGER REFERENCES repair_merge(id),plan_id INTEGER REFERENCES repair_plan(id),PRIMARY KEY(merge_id,plan_id));
+CREATE TABLE IF NOT EXISTS repair_merge_key(merge_id INTEGER REFERENCES repair_merge(id),key TEXT NOT NULL,outcome TEXT NOT NULL,decision TEXT,value TEXT,replay_value TEXT,target_value TEXT,primary_plan_id INTEGER REFERENCES repair_plan(id),source_count INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(merge_id,key));
+CREATE TABLE IF NOT EXISTS repair_merge_source(merge_id INTEGER REFERENCES repair_merge(id),key TEXT NOT NULL,plan_id INTEGER REFERENCES repair_plan(id),decision TEXT NOT NULL,value TEXT,reason TEXT NOT NULL,PRIMARY KEY(merge_id,key,plan_id));
 """
+
+# Columns added after the first copy-on-write repair implementation.  Fresh
+# databases get them from SCHEMA; this keeps a database created by an older
+# build usable without rewriting any audited data.
+_REPAIR_PLAN_COLUMNS = (
+    ('scope_kind', "TEXT NOT NULL DEFAULT 'full'"),
+    ('audit_digest', 'TEXT'),
+    ('base_target_id', 'INTEGER'),
+    ('base_target_digest', 'TEXT'),
+)
+
+
+def _migrate(db):
+    existing = {row[1] for row in db.execute('PRAGMA table_info(repair_plan)')}
+    for name, declaration in _REPAIR_PLAN_COLUMNS:
+        if name not in existing:
+            db.execute(f'ALTER TABLE repair_plan ADD COLUMN {name} {declaration}')
+    db.commit()
+
+
 def connect(path):
-    p=Path(path);p.parent.mkdir(parents=True,exist_ok=True)
-    db=sqlite3.connect(p)
-    db.row_factory=sqlite3.Row
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(p)
+    db.row_factory = sqlite3.Row
     db.executescript(SCHEMA)
+    _migrate(db)
     return db

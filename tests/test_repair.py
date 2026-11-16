@@ -67,7 +67,7 @@ def test_repaired_snapshot_requires_new_consumer_ack(tmp_path):
 def test_repair_plan_rejects_missing_decision_and_stale_target(tmp_path):
     db, run, target, audit = seeded(tmp_path)
     with pytest.raises(ValueError, match='repair_manifest_incomplete'):
-        plan_repair(db, audit, FIXTURES / 'repair_incomplete.json')
+        plan_repair(db, audit, FIXTURES / 'repair_incomplete.json', scope='full')
     plan = plan_repair(db, audit, FIXTURES / 'repair_partial.json')
     con = connect(db)
     before = con.execute('SELECT COUNT(*) FROM target_snapshot').fetchone()[0]

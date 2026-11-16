@@ -152,3 +152,49 @@ def release_decision(db_path, audit_id):
             return gate_id,status,reason
     finally:
         db.close()
+
+
+def audit_repair_merge(db_path, merge_id):
+    """Re-audit a merged repair snapshot; the merged snapshot is never a release target itself."""
+    from .repair import repair_merge_report
+    report = repair_merge_report(db_path, merge_id)
+    merge = report['merge']
+    if merge['status'] != 'merged':
+        raise ValueError('repair_merge_conflict')
+    if merge['output_target_id'] is None:
+        raise ValueError('repair_merge_has_no_snapshot')
+    db = connect(db_path)
+    try:
+        # Bind to the audit created for this merged snapshot; never reuse an
+        # audit of an intermediate branch snapshot.
+        existing = db.execute('SELECT id,status FROM cutover_audit WHERE run_id=? AND target_id=? '
+                              'AND target_digest=? ORDER BY id DESC LIMIT 1',
+                              (merge['run_id'], merge['output_target_id'], merge['output_digest'])).fetchone()
+        if existing:
+            return existing['id'], existing['status'], None
+        run_id = merge['run_id']
+    finally:
+        db.close()
+    return audit_target(db_path, run_id, merge['output_target_id'])
+
+
+def release_repair_merge(db_path, merge_id):
+    """Release gate bound to the new audit of a merged repair snapshot.
+
+    A blocked or partial merge never yields a ready gate, and the gate always
+    references a fresh audit row rather than the frozen pre-merge audit.
+    """
+    from .repair import repair_merge_report
+    report = repair_merge_report(db_path, merge_id)
+    merge = report['merge']
+    if merge['status'] != 'merged':
+        raise ValueError('repair_merge_conflict')
+    unresolved = [row['key'] for row in report['keys'] if row['outcome'] in {'unresolved', 'conflict', 'deferred'}]
+    if unresolved:
+        raise ValueError('repair_merge_incomplete')
+    audit_id, status, _ = audit_repair_merge(db_path, merge_id)
+    _, gate_status, reason = release_decision(db_path, audit_id)
+    if status != 'ready' and gate_status == 'ready':
+        raise ValueError('repair_merge_audit_not_ready')
+    return audit_id, gate_status, reason
+
