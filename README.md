@@ -36,3 +36,5 @@ python -m cdcverdict recall-ack --db data.db --recall 1 --recipient lab --proof-
 质量数据产品是另一条独立链：`quality-contract` 定义无环规则依赖图与逐产品要求，`quality-batch` 对离线订单事实逐层裁定并隔离受影响的产品。`quality-propose`、`quality-review`、`quality-withdraw` 和 `quality-apply` 对同一事实的竞争修复方案做独立审核与仲裁，保留每版事实及结论。`quality-publish` 只为当前 `ready` 产品导出并持久化带来源哈希的 manifest；修复一个规则可能仍无法放行下游产品。完整流程和反例见 [建仓需求补充 v5](docs/build-requirement-addendum-v5.md)。
 
 仓库计算用量的周期关账是独立账本：`period-contract`、`period-choose` 冻结有效合同及产品额度优先级，`period-import` 留存原始计量与更正，`period-close` 把产品专属额度、共享额度和应收逐行冻结。迟到更正只标记待重述，不改旧关账；`period-restate-request` 与 `period-restate-approve` 经独立授权后生成下一版和差额。它不计算 CDC 可见行，也不判断银行回款是否到账。命令、合同取舍及反例见 [建仓需求补充 v6](docs/build-requirement-addendum-v6.md)。
+
+期间内签约条款变更由 `period-amend` 签署：不可变 amendment 只改产品单价，绑定原合同 SHA、租户、期间与 `effective_at`。`prospective` 按用量事件 `occurred_at` 取价，`retroactive` 把全期有效用量追溯改价；更正的 `observed_at` 只是发现时间，不参与定价。修订进入来源摘要，已关账期间只标待重述；批准后生成绑定修订的下一版并逐产品记录差额。定价语义与反例见 [建仓需求补充 v7](docs/build-requirement-addendum-v7.md)。

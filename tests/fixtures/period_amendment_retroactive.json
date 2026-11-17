@@ -1,0 +1,1 @@
+{"amendment_id":"amend-dashboard-300-retroactive","tenant":"tenant-a","period":"2026-09","contract_id":"warehouse-train-first","contract_sha":"b03adedb8bb06da40304b7a7a4d1ee6cfdd0c6caeec55a7d738efcd4a1678c94","effective_at":"2026-09-20T00:00:00Z","clause":"retroactive","prices_cents":{"dashboard":300},"signer":"owner-a","proof_sha":"signed-amendment-002"}

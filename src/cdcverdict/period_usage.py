@@ -103,12 +103,76 @@ def chosen_contract(db, tenant, period):
                       'WHERE ch.tenant=? AND ch.period=?', (tenant, period)).fetchone()
 
 
+AMENDMENT_CLAUSES = ('prospective', 'retroactive')
+
+
+def sign_amendment(db_path, path):
+    item, raw, sha = _read(path)
+    if not isinstance(item, dict):
+        raise ValueError('period amendment must be a JSON object')
+    required = ('amendment_id', 'tenant', 'period', 'contract_id', 'contract_sha',
+                'effective_at', 'clause', 'prices_cents', 'signer', 'proof_sha')
+    if any(key not in item for key in required):
+        raise ValueError('incomplete period amendment')
+    ident, tenant, period, contract_id, contract_sha, signer, proof = (
+        str(item[key]) for key in ('amendment_id', 'tenant', 'period', 'contract_id',
+                                   'contract_sha', 'signer', 'proof_sha'))
+    if not all((ident.strip(), tenant.strip(), period.strip(), contract_id.strip(),
+                contract_sha.strip(), signer.strip(), proof.strip())):
+        raise ValueError('empty period amendment identity')
+    if item['clause'] not in AMENDMENT_CLAUSES:
+        raise ValueError('amendment clause must be prospective or retroactive')
+    prices = item['prices_cents']
+    if not isinstance(prices, dict) or not prices:
+        raise ValueError('amendment must name at least one product price')
+    if any(not isinstance(key, str) or not key for key in prices):
+        raise ValueError('invalid amendment product')
+    if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in prices.values()):
+        raise ValueError('amendment prices must be nonnegative integer cents')
+    effective = _time(item['effective_at'])
+    with closing(connect(db_path)) as db, db:
+        db.execute('BEGIN IMMEDIATE')
+        old = db.execute('SELECT source_sha FROM period_amendment WHERE id=?', (ident,)).fetchone()
+        if old:
+            if old['source_sha'] != sha:
+                raise ValueError('period amendment is immutable')
+            return {'amendment_id': ident, 'idempotent': True}
+        contract = chosen_contract(db, tenant, period)
+        if not contract or contract['id'] != contract_id:
+            raise ValueError('amendment targets no chosen period contract')
+        if contract['source_sha'] != contract_sha:
+            raise ValueError('amendment does not bind the registered contract digest')
+        if signer not in json.loads(contract['signers_json']):
+            raise ValueError('amendment lacks an authorized contract signer')
+        if not _time(contract['starts']) <= effective < _time(contract['ends']):
+            raise ValueError('amendment effective_at falls outside the contract period')
+        catalog = json.loads(contract['prices_json'])
+        if not set(prices) <= set(catalog):
+            raise ValueError('amendment may only reprice contracted products')
+        db.execute('INSERT INTO period_amendment VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+                   (ident, tenant, period, contract_id, contract_sha, item['effective_at'],
+                    item['clause'], json.dumps(prices, sort_keys=True), signer, proof, sha, raw))
+        state = db.execute('SELECT current_close_id FROM period_state WHERE tenant=? AND period=?',
+                           (tenant, period)).fetchone()
+        if state and state['current_close_id']:
+            db.execute("UPDATE period_state SET status='needs_restatement' WHERE tenant=? AND period=?",
+                       (tenant, period))
+    return {'amendment_id': ident, 'tenant': tenant, 'period': period, 'clause': item['clause']}
+
+
+def amendments(db, tenant, period):
+    return db.execute('SELECT * FROM period_amendment WHERE tenant=? AND period=? '
+                      'ORDER BY effective_at,id', (tenant, period)).fetchall()
+
+
 def source_digest(db, tenant, period):
     contract = chosen_contract(db, tenant, period)
     if not contract:
         raise ValueError('period has no signed contract')
     choice = db.execute('SELECT source_sha FROM period_choice WHERE tenant=? AND period=?', (tenant, period)).fetchone()
     pieces = [contract['source_sha'], choice['source_sha']]
+    pieces += [row['source_sha'] for row in db.execute(
+        'SELECT source_sha FROM period_amendment WHERE tenant=? AND period=? ORDER BY id', (tenant, period))]
     pieces += [row['source_sha'] for row in db.execute(
         'SELECT source_sha FROM period_usage WHERE tenant=? AND period=? ORDER BY id', (tenant, period))]
     pieces += [row['source_sha'] for row in db.execute(
