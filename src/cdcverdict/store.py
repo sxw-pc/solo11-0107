@@ -34,6 +34,12 @@ CREATE TABLE IF NOT EXISTS export_row(export_id INTEGER REFERENCES controlled_ex
 CREATE TABLE IF NOT EXISTS export_exclusion(export_id INTEGER REFERENCES controlled_export(id),key TEXT NOT NULL,reason TEXT NOT NULL,PRIMARY KEY(export_id,key));
 CREATE TABLE IF NOT EXISTS export_recall(id INTEGER PRIMARY KEY,export_id INTEGER REFERENCES controlled_export(id),key TEXT NOT NULL,revocation_id TEXT REFERENCES consent_event(id),status TEXT NOT NULL,reason TEXT NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(export_id,key,revocation_id));
 CREATE TABLE IF NOT EXISTS recall_receipt(id INTEGER PRIMARY KEY,recall_id INTEGER REFERENCES export_recall(id),recipient TEXT NOT NULL,proof_sha TEXT NOT NULL,received_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(recall_id,recipient));
+CREATE TABLE IF NOT EXISTS feed_slot(id TEXT PRIMARY KEY, partition TEXT NOT NULL, deadline TEXT NOT NULL, quorum INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'missing', selected_digest TEXT);
+CREATE TABLE IF NOT EXISTS feed_observation(event_id TEXT PRIMARY KEY, slot_id TEXT REFERENCES feed_slot(id), producer TEXT NOT NULL, digest TEXT NOT NULL, row_count INTEGER NOT NULL, observed_at TEXT NOT NULL, source_sha TEXT NOT NULL, raw BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS feed_verdict(id INTEGER PRIMARY KEY, slot_id TEXT REFERENCES feed_slot(id), revision INTEGER NOT NULL, status TEXT NOT NULL, selected_digest TEXT, evidence TEXT NOT NULL, UNIQUE(slot_id,revision));
+CREATE TABLE IF NOT EXISTS recovery_worker(id TEXT PRIMARY KEY, partition TEXT NOT NULL, capacity INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS recovery_job(id TEXT PRIMARY KEY, slot_id TEXT REFERENCES feed_slot(id), worker_id TEXT REFERENCES recovery_worker(id), priority INTEGER NOT NULL, units INTEGER NOT NULL, revision INTEGER NOT NULL, status TEXT NOT NULL, reason TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS recovery_event(id INTEGER PRIMARY KEY, job_id TEXT REFERENCES recovery_job(id), status TEXT NOT NULL, reason TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 """
 def connect(path):
     p=Path(path);p.parent.mkdir(parents=True,exist_ok=True)

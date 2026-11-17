@@ -6,6 +6,7 @@ from .report import write
 from .cutover import import_target,audit_target,configure_consumers,acknowledge,release_decision
 from .repair import plan_repair,apply_repair,repair_report
 from .consent import import_consent,create_export,audit_withdrawals,acknowledge_recall,export_report
+from .supply import register_slot,observe,register_worker,request_recovery,complete_recovery,supply_report
 from .store import connect
 def demo(workdir=None):
     root=Path(workdir or tempfile.mkdtemp(prefix='cdcverdict-'));root.mkdir(parents=True,exist_ok=True)
@@ -81,6 +82,10 @@ def main():
     ea=s.add_parser('export-audit');ea.add_argument('--db',required=True);ea.add_argument('--export',type=int,required=True)
     ackr=s.add_parser('recall-ack');ackr.add_argument('--db',required=True);ackr.add_argument('--recall',type=int,required=True);ackr.add_argument('--recipient',required=True);ackr.add_argument('--proof-sha',required=True)
     er=s.add_parser('export-report');er.add_argument('--db',required=True);er.add_argument('--export',type=int,required=True)
+    for name in ('feed-slot','feed-observe','recovery-worker','recovery-request'):
+        command=s.add_parser(name);command.add_argument('file');command.add_argument('--db',required=True)
+    done=s.add_parser('recovery-complete');done.add_argument('--db',required=True);done.add_argument('--job',required=True)
+    sr=s.add_parser('supply-report');sr.add_argument('--db',required=True)
     a=p.parse_args()
     if a.cmd=='demo':print(demo(a.workdir))
     elif a.cmd=='demo-decisions':print(decision_demo(a.workdir))
@@ -103,4 +108,10 @@ def main():
     elif a.cmd=='export-audit':print(audit_withdrawals(a.db,a.export))
     elif a.cmd=='recall-ack':print(acknowledge_recall(a.db,a.recall,a.recipient,a.proof_sha))
     elif a.cmd=='export-report':print(json.dumps(export_report(a.db,a.export),ensure_ascii=False,indent=2))
+    elif a.cmd=='feed-slot':print(register_slot(a.db,a.file))
+    elif a.cmd=='feed-observe':print(observe(a.db,a.file))
+    elif a.cmd=='recovery-worker':print(register_worker(a.db,a.file))
+    elif a.cmd=='recovery-request':print(request_recovery(a.db,a.file))
+    elif a.cmd=='recovery-complete':print(complete_recovery(a.db,a.job))
+    elif a.cmd=='supply-report':print(json.dumps(supply_report(a.db),ensure_ascii=False,indent=2))
 if __name__=='__main__':main()
