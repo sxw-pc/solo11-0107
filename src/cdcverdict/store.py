@@ -25,6 +25,15 @@ CREATE TABLE IF NOT EXISTS release_gate(id INTEGER PRIMARY KEY,audit_id INTEGER 
 CREATE TABLE IF NOT EXISTS release_member(gate_id INTEGER REFERENCES release_gate(id),consumer_id TEXT REFERENCES consumer_contract(id),status TEXT NOT NULL,ack_id INTEGER REFERENCES consumer_ack(id),PRIMARY KEY(gate_id,consumer_id));
 CREATE TABLE IF NOT EXISTS repair_plan(id INTEGER PRIMARY KEY,audit_id INTEGER REFERENCES cutover_audit(id),manifest_sha TEXT NOT NULL,raw BLOB NOT NULL,status TEXT NOT NULL,output_target_id INTEGER REFERENCES target_snapshot(id),result TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(audit_id,manifest_sha));
 CREATE TABLE IF NOT EXISTS repair_choice(plan_id INTEGER REFERENCES repair_plan(id),key TEXT NOT NULL,decision TEXT NOT NULL,reason TEXT NOT NULL,replay_value TEXT,target_value TEXT,PRIMARY KEY(plan_id,key));
+CREATE TABLE IF NOT EXISTS consent_source(id INTEGER PRIMARY KEY,sha TEXT UNIQUE,raw BLOB NOT NULL,status TEXT NOT NULL,error TEXT);
+CREATE TABLE IF NOT EXISTS data_subject(id TEXT PRIMARY KEY,owner TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS subject_key(subject_id TEXT REFERENCES data_subject(id),key TEXT UNIQUE,PRIMARY KEY(subject_id,key));
+CREATE TABLE IF NOT EXISTS consent_event(id TEXT PRIMARY KEY,subject_id TEXT REFERENCES data_subject(id),purpose TEXT NOT NULL,version INTEGER NOT NULL,action TEXT NOT NULL,effective_watermark INTEGER NOT NULL,expires_watermark INTEGER,proof_sha TEXT NOT NULL,source_id INTEGER REFERENCES consent_source(id),UNIQUE(subject_id,purpose,version));
+CREATE TABLE IF NOT EXISTS controlled_export(id INTEGER PRIMARY KEY,run_id INTEGER REFERENCES replay_run(id),purpose TEXT NOT NULL,recipient TEXT NOT NULL,status TEXT NOT NULL,content_sha TEXT NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS export_row(export_id INTEGER REFERENCES controlled_export(id),key TEXT NOT NULL,subject_id TEXT NOT NULL,value TEXT NOT NULL,consent_event_id TEXT REFERENCES consent_event(id),PRIMARY KEY(export_id,key));
+CREATE TABLE IF NOT EXISTS export_exclusion(export_id INTEGER REFERENCES controlled_export(id),key TEXT NOT NULL,reason TEXT NOT NULL,PRIMARY KEY(export_id,key));
+CREATE TABLE IF NOT EXISTS export_recall(id INTEGER PRIMARY KEY,export_id INTEGER REFERENCES controlled_export(id),key TEXT NOT NULL,revocation_id TEXT REFERENCES consent_event(id),status TEXT NOT NULL,reason TEXT NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(export_id,key,revocation_id));
+CREATE TABLE IF NOT EXISTS recall_receipt(id INTEGER PRIMARY KEY,recall_id INTEGER REFERENCES export_recall(id),recipient TEXT NOT NULL,proof_sha TEXT NOT NULL,received_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(recall_id,recipient));
 """
 def connect(path):
     p=Path(path);p.parent.mkdir(parents=True,exist_ok=True)

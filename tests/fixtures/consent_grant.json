@@ -1,0 +1,1 @@
+{"subjects":[{"id":"subject-A","owner":"owner-A","keys":["A"]}],"events":[{"id":"g1","subject":"subject-A","purpose":"research","version":1,"action":"grant","effective_watermark":0,"proof_sha":"grant-proof-A"}]}

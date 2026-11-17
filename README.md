@@ -15,3 +15,16 @@
 下游采用决策由 `consumer-contract`、`consumer-ack` 和 `release-gate` 执行。关键消费者的最低水位与对目标来源哈希的接受回执均须满足；目标在审计后变化会阻断切换。合同、回执和每次闸门的成员状态保存在 SQLite 中。`demo-decisions` 可运行一个目标一致且消费者已接受的完整样例。测试还覆盖目标落后、值分歧、缺失/拒绝回执、重复回执冲突和审计后目标变化。
 
 目标有实际差异时，可用 `repair-plan` 导入逐键决议清单，然后以 `repair-apply` 生成写时复制的新目标快照。每个差异键必须明确选择 `restore_replay`、`accept_target` 或 `defer` 并给出理由；清单、逐键原值与期望值、结果快照均保存在 SQLite。接受目标差异或暂缓处理不会伪装成目标一致；只恢复部分键会留下可再次审计的剩余差异。审计后的目标被修改时修复拒绝应用。`repair-report` 展示决议与结果，`demo-repair` 演示分两次修复额外目标行并复核至 ready。新快照有新的来源哈希，旧消费者回执不能使它通过 release gate。
+
+主体授权与导出追索是另一条业务链：`consent-import` 保存主体到业务键的固定归属、用途授权/撤销版本和原始证明；`export-create` 只从指定 `replay_run` 的可见值选取当前用途许可的数据，并持久化导出行与排除原因。迟到撤销不会改写旧导出字节，`export-audit` 为旧导出逐键创建待召回记录，`recall-ack` 仅接受原收件人的回执。`demo-consent` 展示授权导出、迟到撤销、旧导出召回、新导出排除和回执闭环。CLI 示例：
+
+```text
+python -m cdcverdict consent-import tests/fixtures/consent_grant.json --db data.db
+python -m cdcverdict export-create --db data.db --run 1 --purpose research --recipient lab
+python -m cdcverdict consent-import tests/fixtures/consent_withdraw_late.json --db data.db
+python -m cdcverdict export-audit --db data.db --export 1
+python -m cdcverdict export-report --db data.db --export 1
+python -m cdcverdict recall-ack --db data.db --recall 1 --recipient lab --proof-sha receipt-proof-1
+```
+
+授权撤回的对象是数据主体与用途及其已发出的值副本；它不改变 CDC 事务订阅、消费者回执、目标修复或报告归档。具体建仓增量和边界记录在 `docs/build-requirement-addendum-v2.md`。
