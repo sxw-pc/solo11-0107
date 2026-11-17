@@ -88,7 +88,10 @@ def main():
     ea=s.add_parser('export-audit');ea.add_argument('--db',required=True);ea.add_argument('--export',type=int,required=True)
     ackr=s.add_parser('recall-ack');ackr.add_argument('--db',required=True);ackr.add_argument('--recall',type=int,required=True);ackr.add_argument('--recipient',required=True);ackr.add_argument('--proof-sha',required=True)
     er=s.add_parser('export-report');er.add_argument('--db',required=True);er.add_argument('--export',type=int,required=True)
-    for name in ('feed-slot','feed-lineage','feed-observe','recovery-worker','recovery-request'):
+    fs=s.add_parser('feed-slot');fs.add_argument('file');fs.add_argument('--db',required=True)
+    fs.add_argument('--independence-basis',dest='independence_basis',
+                    choices=('terminal_origin','path_disjoint'),default=None)
+    for name in ('feed-lineage','feed-observe','recovery-worker','recovery-request'):
         command=s.add_parser(name);command.add_argument('file');command.add_argument('--db',required=True)
     done=s.add_parser('recovery-complete');done.add_argument('--db',required=True);done.add_argument('--job',required=True)
     sr=s.add_parser('supply-report');sr.add_argument('--db',required=True)
@@ -131,7 +134,7 @@ def main():
     elif a.cmd=='export-audit':print(audit_withdrawals(a.db,a.export))
     elif a.cmd=='recall-ack':print(acknowledge_recall(a.db,a.recall,a.recipient,a.proof_sha))
     elif a.cmd=='export-report':print(json.dumps(export_report(a.db,a.export),ensure_ascii=False,indent=2))
-    elif a.cmd=='feed-slot':print(register_slot(a.db,a.file))
+    elif a.cmd=='feed-slot':print(register_slot(a.db,a.file,a.independence_basis))
     elif a.cmd=='feed-lineage':print(register_lineage(a.db,a.file))
     elif a.cmd=='feed-observe':print(observe(a.db,a.file))
     elif a.cmd=='recovery-worker':print(register_worker(a.db,a.file))

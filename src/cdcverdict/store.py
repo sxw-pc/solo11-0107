@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS export_row(export_id INTEGER REFERENCES controlled_ex
 CREATE TABLE IF NOT EXISTS export_exclusion(export_id INTEGER REFERENCES controlled_export(id),key TEXT NOT NULL,reason TEXT NOT NULL,PRIMARY KEY(export_id,key));
 CREATE TABLE IF NOT EXISTS export_recall(id INTEGER PRIMARY KEY,export_id INTEGER REFERENCES controlled_export(id),key TEXT NOT NULL,revocation_id TEXT REFERENCES consent_event(id),status TEXT NOT NULL,reason TEXT NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(export_id,key,revocation_id));
 CREATE TABLE IF NOT EXISTS recall_receipt(id INTEGER PRIMARY KEY,recall_id INTEGER REFERENCES export_recall(id),recipient TEXT NOT NULL,proof_sha TEXT NOT NULL,received_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(recall_id,recipient));
-CREATE TABLE IF NOT EXISTS feed_slot(id TEXT PRIMARY KEY, partition TEXT NOT NULL, deadline TEXT NOT NULL, quorum INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'missing', selected_digest TEXT);
+CREATE TABLE IF NOT EXISTS feed_slot(id TEXT PRIMARY KEY, partition TEXT NOT NULL, deadline TEXT NOT NULL, quorum INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'missing', selected_digest TEXT, independence_basis TEXT NOT NULL DEFAULT 'terminal_origin');
 CREATE TABLE IF NOT EXISTS feed_observation(event_id TEXT PRIMARY KEY, slot_id TEXT REFERENCES feed_slot(id), producer TEXT NOT NULL, digest TEXT NOT NULL, row_count INTEGER NOT NULL, observed_at TEXT NOT NULL, source_sha TEXT NOT NULL, raw BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS feed_lineage_event(event_id TEXT PRIMARY KEY,producer TEXT NOT NULL,version INTEGER NOT NULL,source_domain TEXT NOT NULL,ancestry TEXT NOT NULL,root_origin TEXT NOT NULL,attested_by TEXT NOT NULL,proof_sha TEXT NOT NULL,source_sha TEXT NOT NULL,raw BLOB NOT NULL,UNIQUE(producer,version));
 CREATE TABLE IF NOT EXISTS feed_lineage_head(producer TEXT PRIMARY KEY,version INTEGER NOT NULL,event_id TEXT REFERENCES feed_lineage_event(event_id),root_origin TEXT NOT NULL);
@@ -64,4 +64,7 @@ def connect(path):
     db=sqlite3.connect(p)
     db.row_factory=sqlite3.Row
     db.executescript(SCHEMA)
+    columns={row[1] for row in db.execute('PRAGMA table_info(feed_slot)')}
+    if 'independence_basis' not in columns:
+        db.execute("ALTER TABLE feed_slot ADD COLUMN independence_basis TEXT NOT NULL DEFAULT 'terminal_origin'")
     return db

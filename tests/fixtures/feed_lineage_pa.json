@@ -1,0 +1,1 @@
+{"event_id":"lineage-pa-v1","producer":"producer-a","version":1,"source_domain":"relay-a","ancestry":["relay-a","shared-warehouse","root-a"],"attested_by":"auditor-1","proof_sha":"proof-pa-v1"}

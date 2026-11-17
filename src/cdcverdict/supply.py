@@ -2,14 +2,43 @@
 
 These decisions concern whether upstream data was delivered and which acquisition
 work can run.  They do not inspect or mutate CDC replay runs.
+
+A feed slot freezes one of two explicit business guarantees:
+
+``terminal_origin``
+    Two observations are independent when their attested paths end at different
+    upstream origins.  Shared intermediate relays do not collapse votes.  This is
+    the historical v3 contract.
+
+``path_disjoint``
+    Two observations are independent only when no node occurs in both complete
+    attested paths.  At most one vote per producer and digest is counted.  The
+    exact maximum set of pairwise path-disjoint producers is solved with a
+    bitset branch-and-bound; an unproven maximum is ``indeterminate`` and never
+    qualifies a delivery.
 """
 
 import hashlib
 import json
+import os
 from contextlib import closing
 from pathlib import Path
 
 from .store import connect
+
+TERMINAL_ORIGIN = 'terminal_origin'
+PATH_DISJOINT = 'path_disjoint'
+INDEPENDENCE_BASES = (TERMINAL_ORIGIN, PATH_DISJOINT)
+
+# Explicit fail-closed search bound for exact path-disjoint selection.  Exhausting
+# it does not license a guess: the verdict becomes indeterminate.  The bound can
+# be tightened through the CDEVERDICT_PATH_SEARCH_LIMIT environment variable.
+PATH_SEARCH_NODE_LIMIT = int(os.environ.get('CDEVERDICT_PATH_SEARCH_LIMIT', '200000'))
+
+
+class _SearchLimitExceeded(Exception):
+    pass
+
 
 
 def _load(path):
@@ -17,21 +46,32 @@ def _load(path):
     return json.loads(raw), raw, hashlib.sha256(raw).hexdigest()
 
 
-def register_slot(db_path, path):
+def register_slot(db_path, path, independence_basis=None):
     item, _, _ = _load(path)
     slot, partition = str(item['slot']), str(item['partition'])
     deadline, quorum = str(item['deadline']), int(item['quorum'])
+    declared = item.get('independence_basis')
+    declared = None if declared is None else str(declared)
+    if independence_basis is not None:
+        independence_basis = str(independence_basis)
+        if declared is not None and declared != independence_basis:
+            raise ValueError('slot declares conflicting independence basis')
+    basis = independence_basis if independence_basis is not None else (declared or TERMINAL_ORIGIN)
+    if basis not in INDEPENDENCE_BASES:
+        raise ValueError('slot requires a known independence basis')
     if not slot or not partition or not deadline or quorum < 2:
         raise ValueError('slot requires partition, deadline and quorum >= 2')
     with closing(connect(db_path)) as db, db:
         old = db.execute('SELECT * FROM feed_slot WHERE id=?', (slot,)).fetchone()
         if old:
-            if (old['partition'], old['deadline'], old['quorum']) != (partition, deadline, quorum):
+            if (old['partition'], old['deadline'], old['quorum'], old['independence_basis']) != (
+                    partition, deadline, quorum, basis):
                 raise ValueError('slot contract changed; register a new slot')
-            return {'slot': slot, 'status': old['status'], 'revision': old['revision']}
-        db.execute('INSERT INTO feed_slot(id,partition,deadline,quorum) VALUES(?,?,?,?)',
-                   (slot, partition, deadline, quorum))
-    return {'slot': slot, 'status': 'missing', 'revision': 0}
+            return {'slot': slot, 'status': old['status'], 'revision': old['revision'],
+                    'independence_basis': old['independence_basis']}
+        db.execute('INSERT INTO feed_slot(id,partition,deadline,quorum,independence_basis) VALUES(?,?,?,?,?)',
+                   (slot, partition, deadline, quorum, basis))
+    return {'slot': slot, 'status': 'missing', 'revision': 0, 'independence_basis': basis}
 
 
 def register_lineage(db_path, path):
@@ -72,39 +112,146 @@ def register_lineage(db_path, path):
             'reopened_slots': reopened}
 
 
-def _arbitrate(db, slot):
+def _disjoint_set(paths, quorum, node_limit=None):
+    """Exact maximum pairwise path-disjoint producer set, or None when unproven.
+
+    ``paths`` maps producer -> ordered ancestry.  Bitsets encode which producers
+    conflict with a given producer.  The search branches include/exclude, pruning
+    on an optimistic remaining bound.  Producers are visited in sorted order and
+    inclusion is explored first, so the same maximum set is returned regardless of
+    observation arrival order.  A search that cannot finish inside ``node_limit``
+    raises instead of falling back to a greedy answer.
+    """
+    producers = sorted(paths)
+    count = len(producers)
+    node_sets = {producer: frozenset(nodes) for producer, nodes in paths.items()}
+    conflicts = [0] * count
+    for index, producer in enumerate(producers):
+        nodes = node_sets[producer]
+        mask = 0
+        for other, peer in enumerate(producers):
+            if other != index and nodes & node_sets[peer]:
+                mask |= 1 << other
+        conflicts[index] = mask
+
+    limit = int(PATH_SEARCH_NODE_LIMIT if node_limit is None else node_limit)
+    explored = 0
+    best_size = 0
+    best_mask = 0
+
+    def search(index, chosen_mask, available_mask, chosen):
+        nonlocal explored, best_size, best_mask
+        explored += 1
+        if explored > limit:
+            raise _SearchLimitExceeded('path-disjoint search exceeded its exactness bound')
+        if chosen + available_mask.bit_count() <= best_size:
+            return
+        if index == count:
+            best_size, best_mask = chosen, chosen_mask
+            return
+        if not (available_mask >> index) & 1:
+            search(index + 1, chosen_mask, available_mask & ~(1 << index), chosen)
+            return
+        # Include first: the first maximum found is the lexicographically smallest.
+        search(index + 1, chosen_mask | (1 << index),
+               available_mask & ~conflicts[index] & ~(1 << index), chosen + 1)
+        search(index + 1, chosen_mask, available_mask & ~(1 << index), chosen)
+
+    search(0, 0, (1 << count) - 1, 0)
+    if best_size < quorum:
+        return None
+    return {producers[index] for index in range(count) if best_mask & (1 << index)}
+
+
+def _path_witness(db, selected_producers):
+    """Complete attested paths and lineage versions for the selected producers."""
+    witness = {}
+    for producer in selected_producers:
+        head = db.execute('SELECT h.version,h.event_id,h.root_origin,e.ancestry '
+                          'FROM feed_lineage_head h JOIN feed_lineage_event e ON e.event_id=h.event_id '
+                          'WHERE h.producer=?', (producer,)).fetchone()
+        if not head:
+            raise ValueError('selected producer has no lineage head')
+        witness[producer] = {'version': head['version'], 'event_id': head['event_id'],
+                             'root_origin': head['root_origin'],
+                             'ancestry': json.loads(head['ancestry'])}
+    return witness
+
+
+def _arbitrate(db, slot, search_limit=None):
     row = db.execute('SELECT * FROM feed_slot WHERE id=?', (slot,)).fetchone()
-    observations = db.execute('SELECT o.producer,o.digest,o.event_id,l.root_origin,l.version AS lineage_version '
-                              'FROM feed_observation o LEFT JOIN feed_lineage_head l ON l.producer=o.producer '
-                              'WHERE o.slot_id=? ORDER BY o.event_id',
-                              (slot,)).fetchall()
+    basis = row['independence_basis'] or TERMINAL_ORIGIN
+    observations = db.execute(
+        'SELECT o.producer,o.digest,o.event_id,h.root_origin,e.ancestry,h.version AS lineage_version '
+        'FROM feed_observation o LEFT JOIN feed_lineage_head h ON h.producer=o.producer '
+        'LEFT JOIN feed_lineage_event e ON e.event_id=h.event_id '
+        'WHERE o.slot_id=? ORDER BY o.event_id',
+        (slot,)).fetchall()
     by_digest = {}
+    paths_by_digest = {}
     unverified = []
     lineage_evidence = {}
     for observation in observations:
-        if not observation['root_origin']:
+        if not observation['root_origin'] or not observation['ancestry']:
             unverified.append(observation['event_id'])
             continue
-        by_digest.setdefault(observation['digest'], set()).add(observation['root_origin'])
+        # One producer casts at most one vote per digest in either contract.
         lineage_evidence[observation['producer']] = {'root_origin': observation['root_origin'],
                                                      'version': observation['lineage_version']}
+        by_digest.setdefault(observation['digest'], set()).add(observation['root_origin'])
+        paths_by_digest.setdefault(observation['digest'], {})[observation['producer']] = list(
+            json.loads(observation['ancestry']))
+
+    selected_producers = []
+    witness = {}
+    indeterminate = None
     if len(by_digest) > 1:
         status, selected = 'disputed', None
     elif not by_digest:
         status, selected = ('unverified' if unverified else 'missing'), None
     else:
-        digest, producers = next(iter(by_digest.items()))
-        status, selected = ('accepted', digest) if len(producers) >= row['quorum'] else ('collecting', None)
+        digest = next(iter(by_digest))
+        if basis == PATH_DISJOINT:
+            candidates = paths_by_digest[digest]
+            try:
+                independent = _disjoint_set(candidates, row['quorum'], search_limit)
+            except _SearchLimitExceeded:
+                independent = None
+                indeterminate = 'path-disjoint search limit exhausted before exact maximum'
+            except RecursionError:
+                # A pathologically deep candidate set must also fail closed.
+                independent = None
+                indeterminate = 'path-disjoint search limit exhausted before exact maximum'
+            if indeterminate:
+                status, selected = 'indeterminate', None
+            elif independent is None:
+                status, selected = 'collecting', None
+            else:
+                status, selected = 'accepted', digest
+                selected_producers = sorted(independent)
+                witness = _path_witness(db, selected_producers)
+        else:
+            producers = by_digest[digest]
+            status, selected = ('accepted', digest) if len(producers) >= row['quorum'] else ('collecting', None)
+
     revision = row['revision'] + 1
-    evidence = {'origins_by_digest': {digest: sorted(origins) for digest, origins in sorted(by_digest.items())},
-                'producer_lineage': lineage_evidence, 'unverified_events': unverified}
+    evidence = {'independence_basis': basis,
+                'origins_by_digest': {digest: sorted(origins) for digest, origins in sorted(by_digest.items())},
+                'producer_lineage': lineage_evidence, 'unverified_events': unverified,
+                'candidate_paths_by_digest': {digest: {producer: list(nodes)
+                                                       for producer, nodes in sorted(paths.items())}
+                                              for digest, paths in sorted(paths_by_digest.items())},
+                'selected_producers': selected_producers, 'path_witness': witness}
+    if indeterminate:
+        evidence['indeterminate_reason'] = indeterminate
     db.execute('UPDATE feed_slot SET revision=?,status=?,selected_digest=? WHERE id=?',
                (revision, status, selected, slot))
     db.execute('INSERT INTO feed_verdict(slot_id,revision,status,selected_digest,evidence) VALUES(?,?,?,?,?)',
                (slot, revision, status, selected, json.dumps(evidence, sort_keys=True)))
     return {'slot': slot, 'revision': revision, 'status': status, 'selected_digest': selected,
-            'independent_origins': evidence['origins_by_digest'], 'lineage': lineage_evidence,
-            'unverified_events': unverified}
+            'independence_basis': basis, 'independent_origins': evidence['origins_by_digest'],
+            'lineage': lineage_evidence, 'selected_producers': selected_producers,
+            'path_witness': witness, 'unverified_events': unverified}
 
 
 def observe(db_path, path):

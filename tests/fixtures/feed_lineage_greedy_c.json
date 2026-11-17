@@ -1,0 +1,1 @@
+{"event_id":"lineage-gc-v1","producer":"producer-c","version":1,"source_domain":"relay-c","ancestry":["relay-c","r2","r4"],"attested_by":"auditor-3","proof_sha":"proof-gc-v1"}
