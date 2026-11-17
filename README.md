@@ -36,3 +36,16 @@ python -m cdcverdict recall-ack --db data.db --recall 1 --recipient lab --proof-
 质量数据产品是另一条独立链：`quality-contract` 定义无环规则依赖图与逐产品要求，`quality-batch` 对离线订单事实逐层裁定并隔离受影响的产品。`quality-propose`、`quality-review`、`quality-withdraw` 和 `quality-apply` 对同一事实的竞争修复方案做独立审核与仲裁，保留每版事实及结论。`quality-publish` 只为当前 `ready` 产品导出并持久化带来源哈希的 manifest；修复一个规则可能仍无法放行下游产品。完整流程和反例见 [建仓需求补充 v5](docs/build-requirement-addendum-v5.md)。
 
 仓库计算用量的周期关账是独立账本：`period-contract`、`period-choose` 冻结有效合同及产品额度优先级，`period-import` 留存原始计量与更正，`period-close` 把产品专属额度、共享额度和应收逐行冻结。迟到更正只标记待重述，不改旧关账；`period-restate-request` 与 `period-restate-approve` 经独立授权后生成下一版和差额。它不计算 CDC 可见行，也不判断银行回款是否到账。命令、合同取舍及反例见 [建仓需求补充 v6](docs/build-requirement-addendum-v6.md)。
+
+事务级消费者变更 feed 是在已完成 ReplayRun 之上的独立下游链，与 cutover 级 `consumer_ack` 分开。`feed-subscribe` 为每个 consumer 冻结订阅合同、授权键范围和用途；两类语义不是同一消费方的 strict/partial 开关：`ledger` 必须收到授权范围内的完整事务 envelope（全部事件、`complete=true`），授权范围缺事务成员时阻断并记录 `txn_scope_gap`，绝不发出可冒充完整事务的内容；`key_alert` 只投影授权键的 change 腿，固定 `complete=false` 并附原 `txn_id`、`commit_seq`、原成员数、投影数和 `hidden_count`，可触发局部告警但不能据此认定整组账户平衡。可交付事务从所选 run 的实际 evidence 反查：`timeline.transactions` 的 accepted/excluded、`rules.replay` 写入的 run 级 evidence 与 `run_exclusion` 共同界定范围，excluded、回放失败或无 run evidence 的事务不会输出为完整 delivery。
+
+交付为 at-least-once：`feed` 先在 SQLite 持久化 envelope、payload 字节和幂等键 `consumer_id/run_id/txn_id`（`txn_delivery` outbox），再把同字节写临时文件并原子 rename 为 JSONL sink，最后只有 `ack` 才推进该 consumer 自己的 `txn_feed_cursor`；不同 consumer 的 cursor 互不影响，同一 consumer 严格按 commit_seq 单调交付，不越过未 ACK 的前序事务。文件已发布而 ACK 前崩溃时，`recover` 以相同幂等键重发同一字节（SHA-256 校验），不跳过事务、不生成第二个逻辑 delivery；无外部协作时不承诺 exactly-once。CLI：
+
+```text
+python -m cdcverdict feed-subscribe subs.json --db data.db
+python -m cdcverdict feed --db data.db --consumer ledger --run 1 --sink-dir sink/
+python -m cdcverdict recover --db data.db --consumer ledger
+python -m cdcverdict ack --db data.db --consumer ledger --run 1 --txn T1
+python -m cdcverdict feed-report --db data.db --consumer ledger
+python -m pytest -q tests/test_consumer_txn_feed.py tests/test_replay.py
+```

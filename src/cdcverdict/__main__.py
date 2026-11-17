@@ -13,6 +13,7 @@ from .quality import (register_quality_contract,import_quality_batch,propose_qua
                       publish_quality_product)
 from .period_usage import register_contract as period_contract,choose_contract as period_choose,import_file as period_import
 from .period_close import close_period,request_restatement,approve_restatement,period_report
+from .feed import register_subscription,publish_feed,recover_feed,acknowledge_feed,feed_report
 from .store import connect
 def demo(workdir=None):
     root=Path(workdir or tempfile.mkdtemp(prefix='cdcverdict-'));root.mkdir(parents=True,exist_ok=True)
@@ -109,6 +110,11 @@ def main():
     pc=s.add_parser('period-close');pc.add_argument('--db',required=True);pc.add_argument('--tenant',required=True);pc.add_argument('--period',required=True);pc.add_argument('--as-of',required=True);pc.add_argument('--actor',required=True)
     pra=s.add_parser('period-restate-approve');pra.add_argument('--db',required=True);pra.add_argument('--request',required=True);pra.add_argument('--reviewer',required=True);pra.add_argument('--proof-sha',required=True)
     prp=s.add_parser('period-report');prp.add_argument('--db',required=True);prp.add_argument('--tenant',required=True);prp.add_argument('--period',required=True)
+    fs=s.add_parser('feed-subscribe');fs.add_argument('file');fs.add_argument('--db',required=True)
+    fp=s.add_parser('feed');fp.add_argument('--db',required=True);fp.add_argument('--consumer',required=True);fp.add_argument('--run',type=int,required=True);fp.add_argument('--sink-dir')
+    fr=s.add_parser('recover');fr.add_argument('--db',required=True);fr.add_argument('--consumer',required=True);fr.add_argument('--sink-dir')
+    fa=s.add_parser('ack');fa.add_argument('--db',required=True);fa.add_argument('--consumer',required=True);fa.add_argument('--run',type=int,required=True);fa.add_argument('--txn',required=True)
+    fpr=s.add_parser('feed-report');fpr.add_argument('--db',required=True);fpr.add_argument('--consumer')
     a=p.parse_args()
     if a.cmd=='demo':print(demo(a.workdir))
     elif a.cmd=='demo-decisions':print(decision_demo(a.workdir))
@@ -159,4 +165,9 @@ def main():
     elif a.cmd=='period-restate-request':print(json.dumps(request_restatement(a.db,a.file),ensure_ascii=False))
     elif a.cmd=='period-restate-approve':print(json.dumps(approve_restatement(a.db,a.request,a.reviewer,a.proof_sha),ensure_ascii=False))
     elif a.cmd=='period-report':print(json.dumps(period_report(a.db,a.tenant,a.period),ensure_ascii=False,indent=2))
+    elif a.cmd=='feed-subscribe':print(json.dumps(register_subscription(a.db,a.file),ensure_ascii=False))
+    elif a.cmd=='feed':print(json.dumps(publish_feed(a.db,a.consumer,a.run,a.sink_dir),ensure_ascii=False))
+    elif a.cmd=='recover':print(json.dumps(recover_feed(a.db,a.consumer,a.sink_dir),ensure_ascii=False))
+    elif a.cmd=='ack':print(json.dumps(acknowledge_feed(a.db,a.consumer,a.run,a.txn),ensure_ascii=False))
+    elif a.cmd=='feed-report':print(json.dumps(feed_report(a.db,a.consumer),ensure_ascii=False,indent=2))
 if __name__=='__main__':main()
