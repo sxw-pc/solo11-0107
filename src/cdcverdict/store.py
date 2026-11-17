@@ -29,10 +29,15 @@ CREATE TABLE IF NOT EXISTS consent_source(id INTEGER PRIMARY KEY,sha TEXT UNIQUE
 CREATE TABLE IF NOT EXISTS data_subject(id TEXT PRIMARY KEY,owner TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS subject_key(subject_id TEXT REFERENCES data_subject(id),key TEXT UNIQUE,PRIMARY KEY(subject_id,key));
 CREATE TABLE IF NOT EXISTS consent_event(id TEXT PRIMARY KEY,subject_id TEXT REFERENCES data_subject(id),purpose TEXT NOT NULL,version INTEGER NOT NULL,action TEXT NOT NULL,effective_watermark INTEGER NOT NULL,expires_watermark INTEGER,proof_sha TEXT NOT NULL,source_id INTEGER REFERENCES consent_source(id),UNIQUE(subject_id,purpose,version));
-CREATE TABLE IF NOT EXISTS controlled_export(id INTEGER PRIMARY KEY,run_id INTEGER REFERENCES replay_run(id),purpose TEXT NOT NULL,recipient TEXT NOT NULL,status TEXT NOT NULL,content_sha TEXT NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS consent_processor(subject_id TEXT NOT NULL REFERENCES data_subject(id),purpose TEXT NOT NULL,processor TEXT NOT NULL,source_id INTEGER REFERENCES consent_source(id),PRIMARY KEY(subject_id,purpose,processor));
+CREATE TABLE IF NOT EXISTS processing_contract(id TEXT PRIMARY KEY,purpose TEXT NOT NULL,mode TEXT NOT NULL,source_sha TEXT NOT NULL,raw BLOB NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS processing_delegation(id TEXT NOT NULL,revision INTEGER NOT NULL,contract_id TEXT NOT NULL REFERENCES processing_contract(id),parent_id TEXT,parent_revision INTEGER,subject_id TEXT NOT NULL REFERENCES data_subject(id),purpose TEXT NOT NULL,delegator TEXT NOT NULL,delegate TEXT NOT NULL,action TEXT NOT NULL,effective_watermark INTEGER NOT NULL,expires_watermark INTEGER,proof_sha TEXT NOT NULL,source_sha TEXT NOT NULL,raw BLOB NOT NULL,PRIMARY KEY(id,revision));
+CREATE TABLE IF NOT EXISTS controlled_export(id INTEGER PRIMARY KEY,run_id INTEGER REFERENCES replay_run(id),purpose TEXT NOT NULL,recipient TEXT NOT NULL,status TEXT NOT NULL,content_sha TEXT NOT NULL,contract_id TEXT,chain_sha TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS export_chain(export_id INTEGER REFERENCES controlled_export(id),subject_id TEXT NOT NULL,contract_id TEXT,mode TEXT NOT NULL,chain_sha TEXT NOT NULL,PRIMARY KEY(export_id,subject_id));
+CREATE TABLE IF NOT EXISTS export_chain_member(export_id INTEGER REFERENCES controlled_export(id),subject_id TEXT NOT NULL,position INTEGER NOT NULL,processor TEXT NOT NULL,delegation_id TEXT,delegation_revision INTEGER,PRIMARY KEY(export_id,subject_id,position));
 CREATE TABLE IF NOT EXISTS export_row(export_id INTEGER REFERENCES controlled_export(id),key TEXT NOT NULL,subject_id TEXT NOT NULL,value TEXT NOT NULL,consent_event_id TEXT REFERENCES consent_event(id),PRIMARY KEY(export_id,key));
 CREATE TABLE IF NOT EXISTS export_exclusion(export_id INTEGER REFERENCES controlled_export(id),key TEXT NOT NULL,reason TEXT NOT NULL,PRIMARY KEY(export_id,key));
-CREATE TABLE IF NOT EXISTS export_recall(id INTEGER PRIMARY KEY,export_id INTEGER REFERENCES controlled_export(id),key TEXT NOT NULL,revocation_id TEXT REFERENCES consent_event(id),status TEXT NOT NULL,reason TEXT NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(export_id,key,revocation_id));
+CREATE TABLE IF NOT EXISTS export_recall(id INTEGER PRIMARY KEY,export_id INTEGER REFERENCES controlled_export(id),key TEXT NOT NULL,revocation_id TEXT REFERENCES consent_event(id),recipient TEXT NOT NULL,status TEXT NOT NULL,reason TEXT NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(export_id,key,revocation_id,recipient));
 CREATE TABLE IF NOT EXISTS recall_receipt(id INTEGER PRIMARY KEY,recall_id INTEGER REFERENCES export_recall(id),recipient TEXT NOT NULL,proof_sha TEXT NOT NULL,received_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(recall_id,recipient));
 CREATE TABLE IF NOT EXISTS feed_slot(id TEXT PRIMARY KEY, partition TEXT NOT NULL, deadline TEXT NOT NULL, quorum INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'missing', selected_digest TEXT);
 CREATE TABLE IF NOT EXISTS feed_observation(event_id TEXT PRIMARY KEY, slot_id TEXT REFERENCES feed_slot(id), producer TEXT NOT NULL, digest TEXT NOT NULL, row_count INTEGER NOT NULL, observed_at TEXT NOT NULL, source_sha TEXT NOT NULL, raw BLOB NOT NULL);
@@ -59,9 +64,63 @@ CREATE TABLE IF NOT EXISTS quality_review(proposal_id TEXT PRIMARY KEY REFERENCE
 CREATE TABLE IF NOT EXISTS quality_arbitration(id INTEGER PRIMARY KEY,batch_id TEXT NOT NULL REFERENCES quality_batch(id),status TEXT NOT NULL,details TEXT NOT NULL,assessment_id INTEGER REFERENCES quality_assessment(id),created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS quality_publication(id INTEGER PRIMARY KEY,batch_id TEXT NOT NULL REFERENCES quality_batch(id),product_id TEXT NOT NULL,assessment_id INTEGER NOT NULL REFERENCES quality_assessment(id),manifest_sha TEXT NOT NULL,raw BLOB NOT NULL,out_path TEXT NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 """
+def _migrate_consent_columns(db):
+    # Databases created before processing chains lack these columns; CREATE
+    # TABLE IF NOT EXISTS only covers fresh files.
+    migrations = {
+        'controlled_export': (('contract_id', 'TEXT'), ('chain_sha', 'TEXT')),
+        'export_recall': (('recipient', 'TEXT'),),
+    }
+    added = False
+    for table, columns in migrations.items():
+        existing = {row['name'] for row in db.execute(f'PRAGMA table_info({table})')}
+        for name, kind in columns:
+            if name not in existing:
+                db.execute(f'ALTER TABLE {table} ADD COLUMN {name} {kind}')
+                added = True
+    # The legacy table was unique per (export, key, revocation); a chain export
+    # needs one recall per holder, so the constraint must include recipient.
+    for index in db.execute('PRAGMA index_list(export_recall)').fetchall():
+        if not index['unique']:
+            continue
+        columns = [row['name'] for row in db.execute(
+            f'PRAGMA index_info("{index["name"]}")')]
+        if 'recipient' not in columns:
+            _rebuild_export_recall(db)
+            added = True
+            break
+    # Old recalls did not name a holder; they refer to the export recipient.
+    # Only write when a legacy row actually needs it (or a column was just
+    # added), so read-only opens of a busy database never take a write lock.
+    if added or db.execute('SELECT 1 FROM export_recall WHERE recipient IS NULL LIMIT 1').fetchone():
+        db.execute("UPDATE export_recall SET recipient=(SELECT recipient FROM controlled_export "
+                   "WHERE controlled_export.id=export_recall.export_id) WHERE recipient IS NULL")
+
+
+def _rebuild_export_recall(db):
+    db.execute('BEGIN IMMEDIATE')
+    db.execute('PRAGMA legacy_alter_table=ON')
+    try:
+        db.execute('ALTER TABLE export_recall RENAME TO export_recall_legacy')
+        db.execute("""
+CREATE TABLE export_recall(id INTEGER PRIMARY KEY,export_id INTEGER REFERENCES controlled_export(id),key TEXT NOT NULL,revocation_id TEXT REFERENCES consent_event(id),recipient TEXT NOT NULL,status TEXT NOT NULL,reason TEXT NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(export_id,key,revocation_id,recipient))""")
+        db.execute('INSERT INTO export_recall(id,export_id,key,revocation_id,recipient,status,reason,created_at) '
+                   'SELECT id,export_id,key,revocation_id,'
+                   '(SELECT recipient FROM controlled_export WHERE controlled_export.id=export_recall_legacy.export_id),'
+                   'status,reason,created_at FROM export_recall_legacy')
+        db.execute('DROP TABLE export_recall_legacy')
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.execute('PRAGMA legacy_alter_table=OFF')
+
+
 def connect(path):
     p=Path(path);p.parent.mkdir(parents=True,exist_ok=True)
     db=sqlite3.connect(p)
     db.row_factory=sqlite3.Row
     db.executescript(SCHEMA)
+    _migrate_consent_columns(db)
     return db

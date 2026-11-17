@@ -1,0 +1,15 @@
+{
+  "processors": [
+    {"subject": "subject-A", "purpose": "research", "processor": "lab"}
+  ],
+  "contracts": [
+    {"id": "pc-direct-research", "purpose": "research", "mode": "direct_only"},
+    {"id": "pc-delegated-research", "purpose": "research", "mode": "delegated_chain"}
+  ],
+  "delegations": [
+    {"id": "d-lab-agency", "revision": 1, "contract": "pc-delegated-research",
+     "subject": "subject-A", "purpose": "research", "delegator": "lab",
+     "delegate": "agency", "action": "delegate", "effective_watermark": 0,
+     "expires_watermark": 5, "proof_sha": "delegation-proof-1"}
+  ]
+}

@@ -5,7 +5,8 @@ from .rules import replay
 from .report import write
 from .cutover import import_target,audit_target,configure_consumers,acknowledge,release_decision
 from .repair import plan_repair,apply_repair,repair_report
-from .consent import import_consent,create_export,audit_withdrawals,acknowledge_recall,export_report
+from .consent import (import_consent,import_processing,create_export,audit_withdrawals,
+                      acknowledge_recall,export_report)
 from .supply import register_slot,register_lineage,observe,register_worker,request_recovery,complete_recovery,supply_report
 from .dispatch import register_dispatch_worker,queue_dispatch,dispatch_tick,complete_dispatch,renew_dispatch,dispatch_report
 from .quality import (register_quality_contract,import_quality_batch,propose_quality_repair,
@@ -84,7 +85,8 @@ def main():
     ra=s.add_parser('repair-apply');ra.add_argument('--db',required=True);ra.add_argument('--plan',type=int,required=True)
     rr=s.add_parser('repair-report');rr.add_argument('--db',required=True);rr.add_argument('--plan',type=int,required=True)
     ci=s.add_parser('consent-import');ci.add_argument('file');ci.add_argument('--db',required=True)
-    ec=s.add_parser('export-create');ec.add_argument('--db',required=True);ec.add_argument('--run',type=int,required=True);ec.add_argument('--purpose',required=True);ec.add_argument('--recipient',required=True)
+    pi=s.add_parser('processing-import');pi.add_argument('file');pi.add_argument('--db',required=True)
+    ec=s.add_parser('export-create');ec.add_argument('--db',required=True);ec.add_argument('--run',type=int,required=True);ec.add_argument('--purpose',required=True);ec.add_argument('--recipient',required=True);ec.add_argument('--contract')
     ea=s.add_parser('export-audit');ea.add_argument('--db',required=True);ea.add_argument('--export',type=int,required=True)
     ackr=s.add_parser('recall-ack');ackr.add_argument('--db',required=True);ackr.add_argument('--recall',type=int,required=True);ackr.add_argument('--recipient',required=True);ackr.add_argument('--proof-sha',required=True)
     er=s.add_parser('export-report');er.add_argument('--db',required=True);er.add_argument('--export',type=int,required=True)
@@ -127,7 +129,8 @@ def main():
     elif a.cmd=='repair-apply':print(apply_repair(a.db,a.plan))
     elif a.cmd=='repair-report':print(json.dumps(repair_report(a.db,a.plan),ensure_ascii=False,indent=2))
     elif a.cmd=='consent-import':print(import_consent(a.db,a.file))
-    elif a.cmd=='export-create':print(create_export(a.db,a.run,a.purpose,a.recipient))
+    elif a.cmd=='processing-import':print(json.dumps(import_processing(a.db,a.file),ensure_ascii=False))
+    elif a.cmd=='export-create':print(create_export(a.db,a.run,a.purpose,a.recipient,a.contract))
     elif a.cmd=='export-audit':print(audit_withdrawals(a.db,a.export))
     elif a.cmd=='recall-ack':print(acknowledge_recall(a.db,a.recall,a.recipient,a.proof_sha))
     elif a.cmd=='export-report':print(json.dumps(export_report(a.db,a.export),ensure_ascii=False,indent=2))

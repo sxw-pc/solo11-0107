@@ -29,6 +29,8 @@ python -m cdcverdict recall-ack --db data.db --recall 1 --recipient lab --proof-
 
 授权撤回的对象是数据主体与用途及其已发出的值副本；它不改变 CDC 事务订阅、消费者回执、目标修复或报告归档。具体建仓增量和边界记录在 `docs/build-requirement-addendum-v2.md`。
 
+用途处理方合同是主体授权的独立增量：`processing-import` 冻结 `direct_only`（仅授权原文列明的处理方可直收）或 `delegated_chain`（被允许处理方可把同一用途的窄化权限委托给子处理方）。每条委托绑定父委托、主体与用途范围、有效水位区间和单调 revision；子范围不得宽于父链交集，环或撤销祖先不能形成有效链。`export-create --contract` 在写入任何导出行前解析完整处理方链，冻结实际链及摘要；迟到撤销沿该冻结链为每个曾收到副本的处理方分别建立召回，子处理方的回执不能关闭父副本，regrant 也不能复活旧副本。边界与反例见 [建仓需求补充 v7](docs/build-requirement-addendum-v7.md)。
+
 来源交付与回补容量是另一个独立工作流：`feed-slot` 登记交付期望，`feed-lineage` 为生产者登记带原文和版本的上游来源谱系，`feed-observe` 根据独立上游 origin 的摘要一致性给出采信或争议，`recovery-worker`、`recovery-request`、`recovery-complete` 维护有限采集资源的优先分配。同源转述不能凑 quorum；晚到冲突或谱系变更会重开已采信交付并使旧版本的回补任务失效。`supply-report` 从 SQLite 展示两套决定及历史证据。完整 CLI 和反例见 [建仓需求补充 v3](docs/build-requirement-addendum-v3.md)。
 
 回补执行租约是与来源采信、规划容量不同的操作决定。`dispatch-worker` 登记实际执行池，`dispatch-queue` 将有效回补工作挂到租户，`dispatch-tick` 在持久化逻辑时钟上按租户轮转领取容量；`dispatch-renew` 延长当前租约，`dispatch-complete` 必须持当前 worker/generation 和采集证据文件才能完成。过期后可跨 worker 接管，旧 token 被 fencing；原始完成证据、SHA-256 和每次领取/过期/完成事件保存在 SQLite。命令与反例见 [建仓需求补充 v4](docs/build-requirement-addendum-v4.md)。
