@@ -32,3 +32,5 @@ python -m cdcverdict recall-ack --db data.db --recall 1 --recipient lab --proof-
 来源交付与回补容量是另一个独立工作流：`feed-slot` 登记交付期望，`feed-lineage` 为生产者登记带原文和版本的上游来源谱系，`feed-observe` 根据独立上游 origin 的摘要一致性给出采信或争议，`recovery-worker`、`recovery-request`、`recovery-complete` 维护有限采集资源的优先分配。同源转述不能凑 quorum；晚到冲突或谱系变更会重开已采信交付并使旧版本的回补任务失效。`supply-report` 从 SQLite 展示两套决定及历史证据。完整 CLI 和反例见 [建仓需求补充 v3](docs/build-requirement-addendum-v3.md)。
 
 回补执行租约是与来源采信、规划容量不同的操作决定。`dispatch-worker` 登记实际执行池，`dispatch-queue` 将有效回补工作挂到租户，`dispatch-tick` 在持久化逻辑时钟上按租户轮转领取容量；`dispatch-renew` 延长当前租约，`dispatch-complete` 必须持当前 worker/generation 和采集证据文件才能完成。过期后可跨 worker 接管，旧 token 被 fencing；原始完成证据、SHA-256 和每次领取/过期/完成事件保存在 SQLite。命令与反例见 [建仓需求补充 v4](docs/build-requirement-addendum-v4.md)。
+
+质量数据产品是另一条独立链：`quality-contract` 定义无环规则依赖图与逐产品要求，`quality-batch` 对离线订单事实逐层裁定并隔离受影响的产品。`quality-propose`、`quality-review`、`quality-withdraw` 和 `quality-apply` 对同一事实的竞争修复方案做独立审核与仲裁，保留每版事实及结论。`quality-publish` 只为当前 `ready` 产品导出并持久化带来源哈希的 manifest；修复一个规则可能仍无法放行下游产品。完整流程和反例见 [建仓需求补充 v5](docs/build-requirement-addendum-v5.md)。

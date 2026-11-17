@@ -8,6 +8,9 @@ from .repair import plan_repair,apply_repair,repair_report
 from .consent import import_consent,create_export,audit_withdrawals,acknowledge_recall,export_report
 from .supply import register_slot,register_lineage,observe,register_worker,request_recovery,complete_recovery,supply_report
 from .dispatch import register_dispatch_worker,queue_dispatch,dispatch_tick,complete_dispatch,renew_dispatch,dispatch_report
+from .quality import (register_quality_contract,import_quality_batch,propose_quality_repair,
+                      review_quality_repair,withdraw_quality_repair,apply_quality_repairs,quality_report,
+                      publish_quality_product)
 from .store import connect
 def demo(workdir=None):
     root=Path(workdir or tempfile.mkdtemp(prefix='cdcverdict-'));root.mkdir(parents=True,exist_ok=True)
@@ -93,6 +96,12 @@ def main():
     df=s.add_parser('dispatch-complete');df.add_argument('--db',required=True);df.add_argument('--task',required=True);df.add_argument('--worker',required=True);df.add_argument('--generation',type=int,required=True);df.add_argument('--tick',type=int,required=True);df.add_argument('--artifact',required=True)
     rn=s.add_parser('dispatch-renew');rn.add_argument('--db',required=True);rn.add_argument('--task',required=True);rn.add_argument('--worker',required=True);rn.add_argument('--generation',type=int,required=True);rn.add_argument('--tick',type=int,required=True)
     drp=s.add_parser('dispatch-report');drp.add_argument('--db',required=True)
+    for name in ('quality-contract','quality-batch','quality-propose','quality-review'):
+        command=s.add_parser(name);command.add_argument('file');command.add_argument('--db',required=True)
+    qw=s.add_parser('quality-withdraw');qw.add_argument('--db',required=True);qw.add_argument('--proposal',required=True);qw.add_argument('--proposer',required=True);qw.add_argument('--reason',required=True)
+    qa=s.add_parser('quality-apply');qa.add_argument('--db',required=True);qa.add_argument('--batch',required=True)
+    qr=s.add_parser('quality-report');qr.add_argument('--db',required=True);qr.add_argument('--batch',required=True)
+    qp=s.add_parser('quality-publish');qp.add_argument('--db',required=True);qp.add_argument('--batch',required=True);qp.add_argument('--product',required=True);qp.add_argument('--out',required=True)
     a=p.parse_args()
     if a.cmd=='demo':print(demo(a.workdir))
     elif a.cmd=='demo-decisions':print(decision_demo(a.workdir))
@@ -128,4 +137,12 @@ def main():
     elif a.cmd=='dispatch-complete':print(json.dumps(complete_dispatch(a.db,a.task,a.worker,a.generation,a.tick,a.artifact),ensure_ascii=False))
     elif a.cmd=='dispatch-renew':print(json.dumps(renew_dispatch(a.db,a.task,a.worker,a.generation,a.tick),ensure_ascii=False))
     elif a.cmd=='dispatch-report':print(json.dumps(dispatch_report(a.db),ensure_ascii=False,indent=2))
+    elif a.cmd=='quality-contract':print(json.dumps(register_quality_contract(a.db,a.file),ensure_ascii=False))
+    elif a.cmd=='quality-batch':print(json.dumps(import_quality_batch(a.db,a.file),ensure_ascii=False))
+    elif a.cmd=='quality-propose':print(json.dumps(propose_quality_repair(a.db,a.file),ensure_ascii=False))
+    elif a.cmd=='quality-review':print(json.dumps(review_quality_repair(a.db,a.file),ensure_ascii=False))
+    elif a.cmd=='quality-withdraw':print(json.dumps(withdraw_quality_repair(a.db,a.proposal,a.proposer,a.reason),ensure_ascii=False))
+    elif a.cmd=='quality-apply':print(json.dumps(apply_quality_repairs(a.db,a.batch),ensure_ascii=False))
+    elif a.cmd=='quality-report':print(json.dumps(quality_report(a.db,a.batch),ensure_ascii=False,indent=2))
+    elif a.cmd=='quality-publish':print(json.dumps(publish_quality_product(a.db,a.batch,a.product,a.out),ensure_ascii=False))
 if __name__=='__main__':main()

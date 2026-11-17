@@ -48,6 +48,16 @@ CREATE TABLE IF NOT EXISTS dispatch_clock(id INTEGER PRIMARY KEY CHECK(id=1),tic
 CREATE TABLE IF NOT EXISTS dispatch_cursor(partition TEXT PRIMARY KEY,last_tenant TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS dispatch_event(id INTEGER PRIMARY KEY,task_id TEXT REFERENCES dispatch_task(id),tick INTEGER NOT NULL,action TEXT NOT NULL,worker_id TEXT,generation INTEGER NOT NULL,detail TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS dispatch_artifact(task_id TEXT PRIMARY KEY REFERENCES dispatch_task(id),source_sha TEXT NOT NULL,raw BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS quality_contract(id TEXT PRIMARY KEY,source_sha TEXT NOT NULL,raw BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS quality_batch(id TEXT PRIMARY KEY,contract_id TEXT NOT NULL REFERENCES quality_contract(id),source_sha TEXT NOT NULL,raw BLOB NOT NULL,revision INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS quality_correction(batch_id TEXT NOT NULL REFERENCES quality_batch(id),fact_key TEXT NOT NULL,value_json TEXT NOT NULL,proposal_id TEXT NOT NULL,revision INTEGER NOT NULL,PRIMARY KEY(batch_id,fact_key));
+CREATE TABLE IF NOT EXISTS quality_assessment(id INTEGER PRIMARY KEY,batch_id TEXT NOT NULL REFERENCES quality_batch(id),revision INTEGER NOT NULL,fact_sha TEXT NOT NULL,facts_json TEXT NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(batch_id,revision));
+CREATE TABLE IF NOT EXISTS quality_rule_result(assessment_id INTEGER NOT NULL REFERENCES quality_assessment(id),rule_id TEXT NOT NULL,status TEXT NOT NULL,detail TEXT NOT NULL,PRIMARY KEY(assessment_id,rule_id));
+CREATE TABLE IF NOT EXISTS quality_product_result(assessment_id INTEGER NOT NULL REFERENCES quality_assessment(id),product_id TEXT NOT NULL,status TEXT NOT NULL,blocked_by TEXT NOT NULL,PRIMARY KEY(assessment_id,product_id));
+CREATE TABLE IF NOT EXISTS quality_proposal(id TEXT PRIMARY KEY,batch_id TEXT NOT NULL REFERENCES quality_batch(id),expected_revision INTEGER NOT NULL,fact_key TEXT NOT NULL,value_json TEXT NOT NULL,proposer TEXT NOT NULL,evidence_sha TEXT NOT NULL,source_sha TEXT NOT NULL,raw BLOB NOT NULL,state TEXT NOT NULL DEFAULT 'open',withdraw_reason TEXT);
+CREATE TABLE IF NOT EXISTS quality_review(proposal_id TEXT PRIMARY KEY REFERENCES quality_proposal(id),reviewer TEXT NOT NULL,verdict TEXT NOT NULL,proof_sha TEXT NOT NULL,source_sha TEXT NOT NULL,raw BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS quality_arbitration(id INTEGER PRIMARY KEY,batch_id TEXT NOT NULL REFERENCES quality_batch(id),status TEXT NOT NULL,details TEXT NOT NULL,assessment_id INTEGER REFERENCES quality_assessment(id),created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS quality_publication(id INTEGER PRIMARY KEY,batch_id TEXT NOT NULL REFERENCES quality_batch(id),product_id TEXT NOT NULL,assessment_id INTEGER NOT NULL REFERENCES quality_assessment(id),manifest_sha TEXT NOT NULL,raw BLOB NOT NULL,out_path TEXT NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 """
 def connect(path):
     p=Path(path);p.parent.mkdir(parents=True,exist_ok=True)
