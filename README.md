@@ -29,4 +29,4 @@ python -m cdcverdict recall-ack --db data.db --recall 1 --recipient lab --proof-
 
 授权撤回的对象是数据主体与用途及其已发出的值副本；它不改变 CDC 事务订阅、消费者回执、目标修复或报告归档。具体建仓增量和边界记录在 `docs/build-requirement-addendum-v2.md`。
 
-来源交付与回补容量是另一个独立工作流：`feed-slot` 登记交付期望，`feed-observe` 根据独立生产者的摘要一致性给出采信或争议，`recovery-worker`、`recovery-request`、`recovery-complete` 维护有限采集资源的优先分配。晚到冲突会重开已采信交付并使旧版本的回补任务失效；`supply-report` 从 SQLite 展示两套决定及历史证据。完整 CLI 和反例见 [建仓需求补充 v3](docs/build-requirement-addendum-v3.md)。
+来源交付与回补容量是另一个独立工作流：`feed-slot` 登记交付期望，`feed-lineage` 为生产者登记带原文和版本的上游来源谱系，`feed-observe` 根据独立上游 origin 的摘要一致性给出采信或争议，`recovery-worker`、`recovery-request`、`recovery-complete` 维护有限采集资源的优先分配。同源转述不能凑 quorum；晚到冲突或谱系变更会重开已采信交付并使旧版本的回补任务失效。`supply-report` 从 SQLite 展示两套决定及历史证据。完整 CLI 和反例见 [建仓需求补充 v3](docs/build-requirement-addendum-v3.md)。

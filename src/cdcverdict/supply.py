@@ -34,28 +34,77 @@ def register_slot(db_path, path):
     return {'slot': slot, 'status': 'missing', 'revision': 0}
 
 
+def register_lineage(db_path, path):
+    """Freeze an attested producer-to-origin path and reopen affected slots."""
+    item, raw, source_sha = _load(path)
+    event, producer, source_domain = (str(item[key]) for key in ('event_id', 'producer', 'source_domain'))
+    version, ancestry = int(item['version']), item['ancestry']
+    attested_by, proof_sha = str(item['attested_by']), str(item['proof_sha'])
+    if (not all((event, producer, source_domain, attested_by, proof_sha)) or
+            version < 1 or not isinstance(ancestry, list) or not ancestry or
+            any(not isinstance(part, str) or not part for part in ancestry) or
+            len(set(ancestry)) != len(ancestry) or ancestry[0] != source_domain or
+            attested_by == producer):
+        raise ValueError('invalid or cyclic producer lineage evidence')
+    root_origin = ancestry[-1]
+    with closing(connect(db_path)) as db, db:
+        old = db.execute('SELECT source_sha FROM feed_lineage_event WHERE event_id=? OR (producer=? AND version=?)',
+                         (event, producer, version)).fetchone()
+        if old:
+            if old['source_sha'] != source_sha:
+                raise ValueError('lineage event/version reused with changed evidence')
+            return {'producer': producer, 'version': version, 'root_origin': root_origin, 'idempotent': True}
+        db.execute('INSERT INTO feed_lineage_event VALUES(?,?,?,?,?,?,?,?,?,?)',
+                   (event, producer, version, source_domain, json.dumps(ancestry), root_origin,
+                    attested_by, proof_sha, source_sha, raw))
+        head = db.execute('SELECT version FROM feed_lineage_head WHERE producer=?', (producer,)).fetchone()
+        reopened = []
+        if not head or version > head['version']:
+            db.execute('INSERT INTO feed_lineage_head VALUES(?,?,?,?) '
+                       'ON CONFLICT(producer) DO UPDATE SET version=excluded.version,event_id=excluded.event_id,root_origin=excluded.root_origin',
+                       (producer, version, event, root_origin))
+            slots = db.execute('SELECT DISTINCT slot_id FROM feed_observation WHERE producer=? ORDER BY slot_id',
+                               (producer,)).fetchall()
+            for slot in slots:
+                reopened.append(_arbitrate(db, slot['slot_id'])['slot'])
+            _schedule_all(db)
+    return {'producer': producer, 'version': version, 'root_origin': root_origin,
+            'reopened_slots': reopened}
+
+
 def _arbitrate(db, slot):
     row = db.execute('SELECT * FROM feed_slot WHERE id=?', (slot,)).fetchone()
-    observations = db.execute('SELECT producer,digest,event_id FROM feed_observation WHERE slot_id=? ORDER BY event_id',
+    observations = db.execute('SELECT o.producer,o.digest,o.event_id,l.root_origin,l.version AS lineage_version '
+                              'FROM feed_observation o LEFT JOIN feed_lineage_head l ON l.producer=o.producer '
+                              'WHERE o.slot_id=? ORDER BY o.event_id',
                               (slot,)).fetchall()
     by_digest = {}
+    unverified = []
+    lineage_evidence = {}
     for observation in observations:
-        by_digest.setdefault(observation['digest'], set()).add(observation['producer'])
+        if not observation['root_origin']:
+            unverified.append(observation['event_id'])
+            continue
+        by_digest.setdefault(observation['digest'], set()).add(observation['root_origin'])
+        lineage_evidence[observation['producer']] = {'root_origin': observation['root_origin'],
+                                                     'version': observation['lineage_version']}
     if len(by_digest) > 1:
         status, selected = 'disputed', None
     elif not by_digest:
-        status, selected = 'missing', None
+        status, selected = ('unverified' if unverified else 'missing'), None
     else:
         digest, producers = next(iter(by_digest.items()))
         status, selected = ('accepted', digest) if len(producers) >= row['quorum'] else ('collecting', None)
     revision = row['revision'] + 1
-    evidence = {digest: sorted(producers) for digest, producers in sorted(by_digest.items())}
+    evidence = {'origins_by_digest': {digest: sorted(origins) for digest, origins in sorted(by_digest.items())},
+                'producer_lineage': lineage_evidence, 'unverified_events': unverified}
     db.execute('UPDATE feed_slot SET revision=?,status=?,selected_digest=? WHERE id=?',
                (revision, status, selected, slot))
     db.execute('INSERT INTO feed_verdict(slot_id,revision,status,selected_digest,evidence) VALUES(?,?,?,?,?)',
                (slot, revision, status, selected, json.dumps(evidence, sort_keys=True)))
     return {'slot': slot, 'revision': revision, 'status': status, 'selected_digest': selected,
-            'independent_producers': evidence}
+            'independent_origins': evidence['origins_by_digest'], 'lineage': lineage_evidence,
+            'unverified_events': unverified}
 
 
 def observe(db_path, path):
@@ -166,6 +215,8 @@ def supply_report(db_path):
         return {
             'slots': [dict(x) for x in db.execute('SELECT * FROM feed_slot ORDER BY id')],
             'observations': [dict(x) for x in db.execute('SELECT event_id,slot_id,producer,digest,row_count,observed_at,source_sha FROM feed_observation ORDER BY event_id')],
+            'lineage_events': [dict(x) for x in db.execute('SELECT event_id,producer,version,source_domain,ancestry,root_origin,attested_by,proof_sha,source_sha FROM feed_lineage_event ORDER BY producer,version')],
+            'lineage_heads': [dict(x) for x in db.execute('SELECT * FROM feed_lineage_head ORDER BY producer')],
             'verdicts': [dict(x) for x in db.execute('SELECT * FROM feed_verdict ORDER BY id')],
             'workers': [dict(x) for x in db.execute('SELECT * FROM recovery_worker ORDER BY id')],
             'jobs': [dict(x) for x in db.execute('SELECT * FROM recovery_job ORDER BY id')],

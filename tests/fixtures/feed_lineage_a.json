@@ -1,0 +1,1 @@
+{"event_id":"lineage-a-v1","producer":"producer-a","version":1,"source_domain":"relay-a","ancestry":["relay-a","upstream-north-1"],"attested_by":"auditor-1","proof_sha":"proof-a-v1"}

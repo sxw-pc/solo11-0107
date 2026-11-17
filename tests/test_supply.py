@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cdcverdict.supply import (complete_recovery, observe, register_slot,
+from cdcverdict.supply import (complete_recovery, observe, register_lineage, register_slot,
                                register_worker, request_recovery, supply_report)
 
 
@@ -17,6 +17,8 @@ class SupplyWorkflowTest(unittest.TestCase):
         register_slot(self.db, self.fixture / 'feed_slot.json')
         register_slot(self.db, self.fixture / 'feed_slot_east.json')
         register_worker(self.db, self.fixture / 'recovery_worker.json')
+        for producer in 'abc':
+            register_lineage(self.db, self.fixture / f'feed_lineage_{producer}.json')
 
     def _write(self, name, value):
         path = self.root / name
@@ -41,7 +43,7 @@ class SupplyWorkflowTest(unittest.TestCase):
         self.assertEqual('collecting', repeated['status'])
         accepted = observe(self.db, self._observation('E3', 'north-day', 'producer-b', 'digest-A'))
         self.assertEqual('accepted', accepted['status'])
-        self.assertEqual(['producer-a', 'producer-b'], accepted['independent_producers']['digest-A'])
+        self.assertEqual(['upstream-north-1', 'upstream-north-2'], accepted['independent_origins']['digest-A'])
         disputed = observe(self.db, self._observation('E4', 'north-day', 'producer-c', 'digest-B'))
         self.assertEqual('disputed', disputed['status'])
         report = supply_report(self.db)
@@ -86,6 +88,38 @@ class SupplyWorkflowTest(unittest.TestCase):
         self.assertEqual('closed', report['jobs'][0]['status'])
         with self.assertRaisesRegex(ValueError, 'only an active'):
             complete_recovery(self.db, 'J1')
+
+    def test_shared_upstream_cannot_fake_quorum_and_reopens_old_verdict(self):
+        observe(self.db, self._observation('E1', 'north-day', 'producer-a', 'digest-A'))
+        observe(self.db, self._observation('E2', 'north-day', 'producer-b', 'digest-A'))
+        self.assertEqual('accepted', supply_report(self.db)['slots'][1]['status'])
+        changed = register_lineage(self.db, self.fixture / 'feed_lineage_b_same_origin.json')
+        self.assertEqual(['north-day'], changed['reopened_slots'])
+        report = supply_report(self.db)
+        north = next(s for s in report['slots'] if s['id'] == 'north-day')
+        self.assertEqual('collecting', north['status'])
+        self.assertIsNone(north['selected_digest'])
+        self.assertEqual(['upstream-north-1'], json.loads(report['verdicts'][-1]['evidence'])['origins_by_digest']['digest-A'])
+        self.assertEqual(2, next(x for x in report['lineage_heads'] if x['producer'] == 'producer-b')['version'])
+
+    def test_lineage_revision_invalidates_bound_recovery_job(self):
+        observe(self.db, self._observation('E1', 'east-day', 'producer-a', 'digest-X'))
+        request_recovery(self.db, self._job('J1', 'east-day', 4))
+        revised = self._write('lineage-a-v2.json', {'event_id':'lineage-a-v2','producer':'producer-a',
+            'version':2,'source_domain':'relay-a','ancestry':['relay-a','upstream-new'],
+            'attested_by':'auditor-1','proof_sha':'proof-a-v2'})
+        changed = register_lineage(self.db, revised)
+        self.assertEqual(['east-day'], changed['reopened_slots'])
+        report = supply_report(self.db)
+        self.assertEqual('stale', report['jobs'][0]['status'])
+        self.assertEqual('collecting', next(s for s in report['slots'] if s['id']=='east-day')['status'])
+
+    def test_missing_lineage_is_preserved_but_not_counted(self):
+        result = observe(self.db, self._observation('E1', 'north-day', 'unknown-relay', 'digest-A'))
+        self.assertEqual('unverified', result['status'])
+        self.assertEqual(['E1'], result['unverified_events'])
+        observe(self.db, self._observation('E2', 'north-day', 'producer-a', 'digest-A'))
+        self.assertEqual('collecting', next(s for s in supply_report(self.db)['slots'] if s['id']=='north-day')['status'])
 
 
 if __name__ == '__main__':
