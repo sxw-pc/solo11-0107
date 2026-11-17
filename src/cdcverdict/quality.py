@@ -71,11 +71,11 @@ def _contract_order(contract):
     for product in products:
         if not isinstance(product, dict):
             raise ValueError('invalid quality product')
-        name, required = product.get('id'), product.get('requires')
+        name, required, delivery = product.get('id'), product.get('requires'), product.get('delivery', 'operational')
         if (not isinstance(name, str) or not name or name in product_ids or
                 not isinstance(required, list) or not required or
                 not all(isinstance(rule, str) and rule in by_id for rule in required) or
-                len(set(required)) != len(required)):
+                len(set(required)) != len(required) or delivery not in ('operational', 'audit')):
             raise ValueError('invalid quality product dependencies')
         product_ids.add(name)
     return order
@@ -321,6 +321,87 @@ def quality_report(db_path, batch_id):
                                  for x in db.execute('SELECT id,product_id,assessment_id,manifest_sha,out_path,created_at FROM quality_publication WHERE batch_id=? ORDER BY id', (batch_id,))]}
 
 
+def _fact_correction_chains(db, batch_id, original_facts):
+    """Reconstruct each repaired fact's chain from original proposal/review/arbitration rows.
+
+    Chains are read from the immutable proposal, review and arbitration records and bound
+    through the assessments created by each applied arbitration -- never inferred from the
+    current quality_correction row. Returns ``(chains, errors)`` where errors maps a fact
+    key to its broken-chain reasons (``None`` holds batch-level failures); a non-empty
+    mapping means an audit product cannot be published.
+    """
+    def fail(key, message):
+        errors.setdefault(key, []).append(message)
+
+    chains, errors = {}, {}
+    arbitrations = db.execute(
+        "SELECT * FROM quality_arbitration WHERE batch_id=? AND status='applied' ORDER BY id",
+        (batch_id,)).fetchall()
+    proposals = {row['id']: row for row in
+                 db.execute('SELECT * FROM quality_proposal WHERE batch_id=?', (batch_id,))}
+    reviews = {row['proposal_id']: row for row in db.execute(
+        'SELECT r.* FROM quality_review r JOIN quality_proposal p ON p.id=r.proposal_id WHERE p.batch_id=?',
+        (batch_id,))}
+    current = {row['fact_key']: row for row in
+               db.execute('SELECT * FROM quality_correction WHERE batch_id=?', (batch_id,))}
+    seen_keys = set()
+    for arbitration in arbitrations:
+        details = json.loads(arbitration['details'])
+        assessment = db.execute('SELECT revision FROM quality_assessment WHERE id=?',
+                                (arbitration['assessment_id'],)).fetchone()
+        if not assessment:
+            fail(None, 'arbitration %s has no assessment' % arbitration['id'])
+            continue
+        revision = assessment['revision']
+        for key, outcome in details.items():
+            if not isinstance(outcome, dict) or outcome.get('status') != 'approved':
+                continue
+            proposal_id = outcome.get('proposal')
+            proposal = proposals.get(proposal_id)
+            review = reviews.get(proposal_id)
+            if proposal is None or proposal['fact_key'] != key or proposal['state'] != 'applied':
+                fail(key, 'revision %s lacks an adopted proposal' % revision)
+                continue
+            if review is None or review['verdict'] != 'approve' or review['reviewer'] == proposal['proposer']:
+                fail(key, 'revision %s lacks an independent approved review' % revision)
+                continue
+            new_value = json.loads(proposal['value_json'])
+            previous = chains[key][-1]['new_value'] if key in chains else original_facts.get(key)
+            prior_assessment = db.execute(
+                'SELECT facts_json FROM quality_assessment WHERE batch_id=? AND revision=?',
+                (batch_id, revision - 1)).fetchone()
+            if prior_assessment is None:
+                fail(key, 'revision %s has no predecessor assessment' % revision)
+                continue
+            old_value = json.loads(prior_assessment['facts_json']).get(key)
+            if old_value != previous:
+                fail(key, 'chain is not contiguous at revision %s' % revision)
+            chains.setdefault(key, []).append(
+                {'revision': revision, 'proposal_id': proposal_id,
+                 'old_value': old_value, 'new_value': new_value,
+                 'evidence_sha': proposal['evidence_sha'],
+                 'reviewer': review['reviewer'], 'review_proof_sha': review['proof_sha'],
+                 'superseded': False})
+            seen_keys.add(key)
+    for key, links in chains.items():
+        revisions = [link['revision'] for link in links]
+        if revisions != sorted(set(revisions)):
+            fail(key, 'chain has non-unique revisions')
+        for link in links[:-1]:
+            link['superseded'] = True
+        terminal = links[-1]
+        correction = current.get(key)
+        if correction is None:
+            fail(key, 'current value has no correction record')
+            continue
+        if correction['revision'] != terminal['revision'] or correction['proposal_id'] != terminal['proposal_id'] \
+                or json.loads(correction['value_json']) != terminal['new_value']:
+            fail(key, 'current correction is not bound to its adopted chain')
+    for key in set(current) - seen_keys:
+        fail(key, 'current correction has no adopted reviewed chain')
+    return chains, errors
+
+
 def publish_quality_product(db_path, batch_id, product_id, out_path):
     """Write a product's current assessed facts and register its exact bytes."""
     target = Path(out_path).resolve()
@@ -361,13 +442,34 @@ def publish_quality_product(db_path, batch_id, product_id, out_path):
             include(name)
         fields = {field for name in relevant for field in rules_by_id[name]['fields']}
         projected_facts = {key: value for key, value in assessment['facts'].items() if key in fields}
+        product_contract = next(product for product in contract['products'] if product['id'] == product_id)
+        delivery = product_contract.get('delivery', 'operational')
         manifest = {'batch_id': batch_id, 'product_id': product_id,
                     'assessment_id': row['id'], 'revision': batch['revision'],
+                    'delivery': delivery,
                     'contract_sha': contract_sha, 'source_sha': batch['source_sha'],
                     'fact_sha': assessment['fact_sha'],
                     'product_fact_sha': hashlib.sha256(_json(projected_facts).encode('utf-8')).hexdigest(),
                     'facts': projected_facts,
                     'rules': {name: assessment['rules'][name] for name in sorted(relevant)}}
+        if delivery == 'audit':
+            original_facts = json.loads(db.execute('SELECT raw FROM quality_batch WHERE id=?',
+                                                   (batch_id,)).fetchone()['raw'])['facts']
+            chains, chain_errors = _fact_correction_chains(db, batch_id, original_facts)
+            projected_chains = {key: chains.get(key, []) for key in sorted(fields)}
+            relevant_errors = ['%s' % reason for reason in chain_errors.get(None, [])]
+            for key in fields:
+                if key in chain_errors:
+                    relevant_errors.extend('%s: %s' % (key, reason) for reason in chain_errors[key])
+                elif chains.get(key) and chains[key][-1]['new_value'] != projected_facts.get(key):
+                    relevant_errors.append('%s: current value is not bound to its reviewed chain' % key)
+                elif not chains.get(key) and db.execute(
+                        'SELECT 1 FROM quality_correction WHERE batch_id=? AND fact_key=?',
+                        (batch_id, key)).fetchone():
+                    relevant_errors.append('%s: current value has no unique adopted reviewed chain' % key)
+            if relevant_errors:
+                raise ValueError('audit product rejected: ' + '; '.join(sorted(set(relevant_errors))))
+            manifest['correction_chains'] = projected_chains
         raw = (_json(manifest) + '\n').encode('utf-8')
         sha = hashlib.sha256(raw).hexdigest()
         target.parent.mkdir(parents=True, exist_ok=True)

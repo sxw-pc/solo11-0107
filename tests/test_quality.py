@@ -11,6 +11,7 @@ from cdcverdict.quality import (apply_quality_repairs, import_quality_batch,
                                 propose_quality_repair, quality_report,publish_quality_product,
                                 register_quality_contract, review_quality_repair,
                                 withdraw_quality_repair)
+from cdcverdict.store import connect
 
 
 class QualityProductTest(unittest.TestCase):
@@ -171,6 +172,225 @@ class QualityProductTest(unittest.TestCase):
                           '--product', 'accounting', '--out', self.root / 'cli-accounting.json')
         self.assertEqual(hashlib.sha256((self.root / 'cli-accounting.json').read_bytes()).hexdigest(),
                          publication['manifest_sha'])
+
+
+class QualityAuditContractTest(unittest.TestCase):
+    AUDIT_BATCH = 'orders-audit'
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.db = self.root / 'quality-audit.sqlite'
+        self.fixture = Path(__file__).parent / 'fixtures'
+        register_quality_contract(self.db, self.fixture / 'quality_contract_audit.json')
+
+    def _write(self, name, value):
+        path = self.root / name
+        path.write_text(json.dumps(value, sort_keys=True), encoding='utf-8')
+        return path
+
+    def _two_repairs(self):
+        """Drive net through -5 -> 5 -> 6, both independently reviewed and applied."""
+        import_quality_batch(self.db, self.fixture / 'quality_batch_audit.json')
+        propose_quality_repair(self.db, self.fixture / 'quality_proposal_audit_net_5.json')
+        review_quality_repair(self.db, self.fixture / 'quality_review_audit_net_5.json')
+        first = apply_quality_repairs(self.db, self.AUDIT_BATCH)
+        self.assertEqual('applied', first['status'])
+        self.assertEqual(1, first['assessment']['revision'])
+        # gross 11 != 5 + 5 keeps the accounting products blocked after the first repair
+        self.assertEqual('blocked', first['assessment']['products']['accounting-audit']['status'])
+        propose_quality_repair(self.db, self.fixture / 'quality_proposal_audit_net_6.json')
+        review_quality_repair(self.db, self.fixture / 'quality_review_audit_net_6.json')
+        second = apply_quality_repairs(self.db, self.AUDIT_BATCH)
+        self.assertEqual('applied', second['status'])
+        self.assertEqual(2, second['assessment']['revision'])
+        self.assertEqual('ready', second['assessment']['products']['accounting-audit']['status'])
+
+    def test_operational_contract_projects_only_declared_fields_without_credentials(self):
+        self._two_repairs()
+        out = self.root / 'fulfillment-ops.json'
+        publish_quality_product(self.db, self.AUDIT_BATCH, 'fulfillment', out)
+        manifest = json.loads(out.read_text(encoding='utf-8'))
+        self.assertEqual('operational', manifest['delivery'])
+        self.assertEqual({'delivery_code': 'DEL-21'}, manifest['facts'])
+        self.assertNotIn('net', manifest['facts'])
+        self.assertNotIn('correction_chains', manifest)
+        self.assertEqual(['delivery-present'], list(manifest['rules']))
+        accounting = self.root / 'accounting-ops.json'
+        publish_quality_product(self.db, self.AUDIT_BATCH, 'accounting-ops', accounting)
+        ops_manifest = json.loads(accounting.read_text(encoding='utf-8'))
+        self.assertEqual('operational', ops_manifest['delivery'])
+        self.assertNotIn('correction_chains', ops_manifest)
+        self.assertEqual({'net', 'tax', 'gross', 'paid'}, set(ops_manifest['facts']))
+        self.assertNotIn('delivery_code', ops_manifest['facts'])
+        self.assertEqual(
+            hashlib.sha256(json.dumps(ops_manifest['facts'], sort_keys=True,
+                                      separators=(',', ':')).encode('utf-8')).hexdigest(),
+            ops_manifest['product_fact_sha'])
+
+    def test_audit_manifest_carries_full_chain_from_frozen_source_to_current_value(self):
+        self._two_repairs()
+        out = self.root / 'accounting-audit.json'
+        published = publish_quality_product(self.db, self.AUDIT_BATCH, 'accounting-audit', out)
+        raw = out.read_bytes()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), published['manifest_sha'])
+        manifest = json.loads(raw)
+        self.assertEqual('audit', manifest['delivery'])
+        self.assertEqual({'net', 'tax', 'gross', 'paid'}, set(manifest['facts']))
+        self.assertNotIn('delivery_code', manifest['facts'])
+        self.assertEqual(6, manifest['facts']['net'])
+        chain = manifest['correction_chains']['net']
+        self.assertEqual([-5, 5], [link['old_value'] for link in chain])
+        self.assertEqual([5, 6], [link['new_value'] for link in chain])
+        self.assertEqual([1, 2], [link['revision'] for link in chain])
+        self.assertEqual(['audit-net-5', 'audit-net-6'], [link['proposal_id'] for link in chain])
+        self.assertEqual(['invoice-21-a', 'invoice-21-corrected'],
+                         [link['evidence_sha'] for link in chain])
+        self.assertEqual(['finance-auditor', 'finance-auditor'],
+                         [link['reviewer'] for link in chain])
+        self.assertEqual(['checked-invoice-21-a', 'checked-invoice-21-corrected'],
+                         [link['review_proof_sha'] for link in chain])
+        self.assertEqual([True, False], [link['superseded'] for link in chain])
+        # facts that never needed repair still get an explicit empty chain entry
+        self.assertEqual([], manifest['correction_chains']['gross'])
+        self.assertEqual([], manifest['correction_chains']['paid'])
+        self.assertEqual([], manifest['correction_chains']['tax'])
+        self.assertEqual(
+            hashlib.sha256(json.dumps(manifest['facts'], sort_keys=True,
+                                      separators=(',', ':')).encode('utf-8')).hexdigest(),
+            manifest['product_fact_sha'])
+        with connect(self.db) as db:
+            stored = db.execute('SELECT raw,manifest_sha FROM quality_publication WHERE id=?',
+                                (published['publication_id'],)).fetchone()
+            self.assertEqual(raw, stored['raw'])
+            self.assertEqual(published['manifest_sha'], stored['manifest_sha'])
+
+    def test_audit_publish_rejected_when_review_is_missing_or_rejecting(self):
+        def state_without_review(proposal):
+            self._two_repairs()
+            with connect(self.db) as db:
+                db.execute('DELETE FROM quality_review WHERE proposal_id=?', (proposal,))
+
+        state_without_review('audit-net-6')
+        out = self.root / 'missing-terminal.json'
+        with self.assertRaisesRegex(ValueError, 'audit product rejected'):
+            publish_quality_product(self.db, self.AUDIT_BATCH, 'accounting-audit', out)
+        self.assertFalse(out.exists())
+
+        self.setUp()
+        state_without_review('audit-net-5')
+        out = self.root / 'missing-superseded.json'
+        with self.assertRaisesRegex(ValueError, 'audit product rejected'):
+            publish_quality_product(self.db, self.AUDIT_BATCH, 'accounting-audit', out)
+        self.assertFalse(out.exists())
+
+        self.setUp()
+        self._two_repairs()
+        with connect(self.db) as db:
+            db.execute("UPDATE quality_review SET verdict='reject' WHERE proposal_id='audit-net-6'")
+        out = self.root / 'rejected-review.json'
+        with self.assertRaisesRegex(ValueError, 'audit product rejected'):
+            publish_quality_product(self.db, self.AUDIT_BATCH, 'accounting-audit', out)
+        self.assertFalse(out.exists())
+
+    def test_audit_publish_rejected_when_current_value_escapes_its_chain(self):
+        self._two_repairs()
+        with connect(self.db) as db:
+            db.execute("UPDATE quality_correction SET proposal_id='audit-net-5' "
+                       "WHERE batch_id=? AND fact_key='net'", (self.AUDIT_BATCH,))
+        out = self.root / 'rebound-correction.json'
+        with self.assertRaisesRegex(ValueError, 'audit product rejected'):
+            publish_quality_product(self.db, self.AUDIT_BATCH, 'accounting-audit', out)
+        self.assertFalse(out.exists())
+        with connect(self.db) as db:
+            db.execute("UPDATE quality_correction SET proposal_id='audit-net-6',value_json='99' "
+                       "WHERE batch_id=? AND fact_key='net'", (self.AUDIT_BATCH,))
+        with self.assertRaisesRegex(ValueError, 'audit product rejected'):
+            publish_quality_product(self.db, self.AUDIT_BATCH, 'accounting-audit',
+                                    self.root / 'divergent-value.json')
+        self.assertFalse((self.root / 'divergent-value.json').exists())
+
+    def test_operational_publish_survives_a_broken_audit_chain(self):
+        self._two_repairs()
+        with connect(self.db) as db:
+            db.execute('DELETE FROM quality_review WHERE proposal_id=?', ('audit-net-5',))
+        out = self.root / 'ops-anyway.json'
+        publish_quality_product(self.db, self.AUDIT_BATCH, 'accounting-ops', out)
+        manifest = json.loads(out.read_text(encoding='utf-8'))
+        self.assertEqual('operational', manifest['delivery'])
+        self.assertEqual(6, manifest['facts']['net'])
+        self.assertNotIn('correction_chains', manifest)
+        with self.assertRaisesRegex(ValueError, 'audit product rejected'):
+            publish_quality_product(self.db, self.AUDIT_BATCH, 'accounting-audit',
+                                    self.root / 'audit-blocked.json')
+
+    def test_historical_publication_bytes_remain_immutable_after_later_revision(self):
+        self._two_repairs()
+        old_out = self.root / 'audit-rev2.json'
+        old = publish_quality_product(self.db, self.AUDIT_BATCH, 'accounting-audit', old_out)
+        old_bytes = old_out.read_bytes()
+        proposals = [
+            ('audit-net-7', 'net', 7, 'invoice-21-final', 'cashier-auditor', 'proof-final-net'),
+            ('audit-gross-12', 'gross', 12, 'invoice-21-gross', 'cashier-auditor', 'proof-final-gross'),
+            ('audit-paid-12', 'paid', 12, 'receipt-21', 'cashier-auditor', 'proof-final-paid'),
+        ]
+        for proposal_id, key, value, evidence, reviewer, proof in proposals:
+            proposal = self._write(proposal_id + '.json', {
+                'proposal_id': proposal_id, 'batch_id': self.AUDIT_BATCH,
+                'expected_revision': 2, 'fact_key': key, 'value': value,
+                'proposer': 'ops-b', 'evidence_sha': evidence})
+            review = self._write(proposal_id + '-review.json', {
+                'proposal_id': proposal_id, 'reviewer': reviewer,
+                'verdict': 'approve', 'proof_sha': proof})
+            propose_quality_repair(self.db, proposal)
+            review_quality_repair(self.db, review)
+        third = apply_quality_repairs(self.db, self.AUDIT_BATCH)
+        self.assertEqual(3, third['assessment']['revision'])
+        new_out = self.root / 'audit-rev3.json'
+        new = publish_quality_product(self.db, self.AUDIT_BATCH, 'accounting-audit', new_out)
+        self.assertEqual(old_bytes, old_out.read_bytes())
+        new_manifest = json.loads(new_out.read_text(encoding='utf-8'))
+        net_chain = new_manifest['correction_chains']['net']
+        self.assertEqual([(1, -5, 5), (2, 5, 6), (3, 6, 7)],
+                         [(link['revision'], link['old_value'], link['new_value']) for link in net_chain])
+        self.assertEqual([True, True, False], [link['superseded'] for link in net_chain])
+        gross_chain = new_manifest['correction_chains']['gross']
+        self.assertEqual(1, len(gross_chain))
+        self.assertEqual((11, 12), (gross_chain[0]['old_value'], gross_chain[0]['new_value']))
+        with connect(self.db) as db:
+            rows = db.execute('SELECT id,manifest_sha,raw,assessment_id FROM quality_publication ORDER BY id').fetchall()
+            self.assertEqual(2, len(rows))
+            self.assertEqual(old['manifest_sha'], rows[0]['manifest_sha'])
+            self.assertEqual(old_bytes, rows[0]['raw'])
+            self.assertEqual(old['assessment_id'], rows[0]['assessment_id'])
+            self.assertEqual(new['manifest_sha'], rows[1]['manifest_sha'])
+            self.assertNotEqual(rows[0]['assessment_id'], rows[1]['assessment_id'])
+        publications = quality_report(self.db, self.AUDIT_BATCH)['publications']
+        self.assertEqual([False, True], [item['current'] for item in publications])
+
+    def test_audit_publish_rejected_when_current_correction_has_no_adopted_chain(self):
+        self._two_repairs()
+        # An orphan correction row that no applied arbitration ever adopted: history cannot
+        # explain the current value, so the audit product must refuse publication.
+        with connect(self.db) as db:
+            db.execute("INSERT INTO quality_correction(batch_id,fact_key,value_json,proposal_id,revision) "
+                       "VALUES(?,?,?,?,?)", (self.AUDIT_BATCH, 'tax', '42', 'ghost-proposal', 2))
+        out = self.root / 'orphan-correction.json'
+        with self.assertRaisesRegex(ValueError, 'audit product rejected'):
+            publish_quality_product(self.db, self.AUDIT_BATCH, 'accounting-audit', out)
+        self.assertFalse(out.exists())
+        # the operational contract makes no chain promise and still publishes
+        ops = self.root / 'orphan-ops.json'
+        publish_quality_product(self.db, self.AUDIT_BATCH, 'accounting-ops', ops)
+        self.assertNotIn('correction_chains', json.loads(ops.read_text(encoding='utf-8')))
+
+    def test_contract_with_unknown_delivery_mode_rejected(self):
+        contract = json.loads((self.fixture / 'quality_contract_audit.json').read_text(encoding='utf-8'))
+        contract['contract_id'] = 'bad-delivery-contract'
+        contract['products'][0]['delivery'] = 'narrative'
+        with self.assertRaisesRegex(ValueError, 'invalid quality product'):
+            register_quality_contract(self.db, self._write('bad-delivery.json', contract))
 
 
 if __name__ == '__main__':
