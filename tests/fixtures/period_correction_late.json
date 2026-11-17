@@ -1,0 +1,1 @@
+{"corrections":[{"event_id":"correct-train-1","usage_id":"meter-train-1","revision":1,"corrected_units":3,"observed_at":"2026-10-03T09:00:00Z","reason":"meter reconciliation found two duplicate jobs"}]}

@@ -34,3 +34,5 @@ python -m cdcverdict recall-ack --db data.db --recall 1 --recipient lab --proof-
 回补执行租约是与来源采信、规划容量不同的操作决定。`dispatch-worker` 登记实际执行池，`dispatch-queue` 将有效回补工作挂到租户，`dispatch-tick` 在持久化逻辑时钟上按租户轮转领取容量；`dispatch-renew` 延长当前租约，`dispatch-complete` 必须持当前 worker/generation 和采集证据文件才能完成。过期后可跨 worker 接管，旧 token 被 fencing；原始完成证据、SHA-256 和每次领取/过期/完成事件保存在 SQLite。命令与反例见 [建仓需求补充 v4](docs/build-requirement-addendum-v4.md)。
 
 质量数据产品是另一条独立链：`quality-contract` 定义无环规则依赖图与逐产品要求，`quality-batch` 对离线订单事实逐层裁定并隔离受影响的产品。`quality-propose`、`quality-review`、`quality-withdraw` 和 `quality-apply` 对同一事实的竞争修复方案做独立审核与仲裁，保留每版事实及结论。`quality-publish` 只为当前 `ready` 产品导出并持久化带来源哈希的 manifest；修复一个规则可能仍无法放行下游产品。完整流程和反例见 [建仓需求补充 v5](docs/build-requirement-addendum-v5.md)。
+
+仓库计算用量的周期关账是独立账本：`period-contract`、`period-choose` 冻结有效合同及产品额度优先级，`period-import` 留存原始计量与更正，`period-close` 把产品专属额度、共享额度和应收逐行冻结。迟到更正只标记待重述，不改旧关账；`period-restate-request` 与 `period-restate-approve` 经独立授权后生成下一版和差额。它不计算 CDC 可见行，也不判断银行回款是否到账。命令、合同取舍及反例见 [建仓需求补充 v6](docs/build-requirement-addendum-v6.md)。

@@ -1,0 +1,1 @@
+{"contract_id":"warehouse-train-first","tenant":"tenant-a","period":"2026-09","starts":"2026-09-01T00:00:00Z","ends":"2026-10-01T00:00:00Z","shared_units":5,"reserved":{"dashboard":2},"prices_cents":{"dashboard":100,"train":400},"priority":["train","dashboard"],"signers":["owner-a"],"closers":["ops-close"],"approvers":["finance-a"]}

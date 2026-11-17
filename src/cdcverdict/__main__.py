@@ -11,6 +11,8 @@ from .dispatch import register_dispatch_worker,queue_dispatch,dispatch_tick,comp
 from .quality import (register_quality_contract,import_quality_batch,propose_quality_repair,
                       review_quality_repair,withdraw_quality_repair,apply_quality_repairs,quality_report,
                       publish_quality_product)
+from .period_usage import register_contract as period_contract,choose_contract as period_choose,import_file as period_import
+from .period_close import close_period,request_restatement,approve_restatement,period_report
 from .store import connect
 def demo(workdir=None):
     root=Path(workdir or tempfile.mkdtemp(prefix='cdcverdict-'));root.mkdir(parents=True,exist_ok=True)
@@ -102,6 +104,11 @@ def main():
     qa=s.add_parser('quality-apply');qa.add_argument('--db',required=True);qa.add_argument('--batch',required=True)
     qr=s.add_parser('quality-report');qr.add_argument('--db',required=True);qr.add_argument('--batch',required=True)
     qp=s.add_parser('quality-publish');qp.add_argument('--db',required=True);qp.add_argument('--batch',required=True);qp.add_argument('--product',required=True);qp.add_argument('--out',required=True)
+    for name in ('period-contract','period-choose','period-import','period-restate-request'):
+        command=s.add_parser(name);command.add_argument('file');command.add_argument('--db',required=True)
+    pc=s.add_parser('period-close');pc.add_argument('--db',required=True);pc.add_argument('--tenant',required=True);pc.add_argument('--period',required=True);pc.add_argument('--as-of',required=True);pc.add_argument('--actor',required=True)
+    pra=s.add_parser('period-restate-approve');pra.add_argument('--db',required=True);pra.add_argument('--request',required=True);pra.add_argument('--reviewer',required=True);pra.add_argument('--proof-sha',required=True)
+    prp=s.add_parser('period-report');prp.add_argument('--db',required=True);prp.add_argument('--tenant',required=True);prp.add_argument('--period',required=True)
     a=p.parse_args()
     if a.cmd=='demo':print(demo(a.workdir))
     elif a.cmd=='demo-decisions':print(decision_demo(a.workdir))
@@ -145,4 +152,11 @@ def main():
     elif a.cmd=='quality-apply':print(json.dumps(apply_quality_repairs(a.db,a.batch),ensure_ascii=False))
     elif a.cmd=='quality-report':print(json.dumps(quality_report(a.db,a.batch),ensure_ascii=False,indent=2))
     elif a.cmd=='quality-publish':print(json.dumps(publish_quality_product(a.db,a.batch,a.product,a.out),ensure_ascii=False))
+    elif a.cmd=='period-contract':print(json.dumps(period_contract(a.db,a.file),ensure_ascii=False))
+    elif a.cmd=='period-choose':print(json.dumps(period_choose(a.db,a.file),ensure_ascii=False))
+    elif a.cmd=='period-import':print(json.dumps(period_import(a.db,a.file),ensure_ascii=False))
+    elif a.cmd=='period-close':print(json.dumps(close_period(a.db,a.tenant,a.period,a.as_of,a.actor),ensure_ascii=False))
+    elif a.cmd=='period-restate-request':print(json.dumps(request_restatement(a.db,a.file),ensure_ascii=False))
+    elif a.cmd=='period-restate-approve':print(json.dumps(approve_restatement(a.db,a.request,a.reviewer,a.proof_sha),ensure_ascii=False))
+    elif a.cmd=='period-report':print(json.dumps(period_report(a.db,a.tenant,a.period),ensure_ascii=False,indent=2))
 if __name__=='__main__':main()

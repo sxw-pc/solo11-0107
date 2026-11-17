@@ -1,0 +1,1 @@
+{"usage":[{"event_id":"meter-dashboard-1","tenant":"tenant-a","period":"2026-09","product":"dashboard","occurred_at":"2026-09-15T10:00:00Z","units":6},{"event_id":"meter-train-1","tenant":"tenant-a","period":"2026-09","product":"train","occurred_at":"2026-09-15T11:00:00Z","units":5}]}
