@@ -7,6 +7,7 @@ from .cutover import import_target,audit_target,configure_consumers,acknowledge,
 from .repair import plan_repair,apply_repair,repair_report
 from .consent import import_consent,create_export,audit_withdrawals,acknowledge_recall,export_report
 from .supply import register_slot,register_lineage,observe,register_worker,request_recovery,complete_recovery,supply_report
+from .dispatch import register_dispatch_worker,queue_dispatch,dispatch_tick,complete_dispatch,renew_dispatch,dispatch_report
 from .store import connect
 def demo(workdir=None):
     root=Path(workdir or tempfile.mkdtemp(prefix='cdcverdict-'));root.mkdir(parents=True,exist_ok=True)
@@ -86,6 +87,12 @@ def main():
         command=s.add_parser(name);command.add_argument('file');command.add_argument('--db',required=True)
     done=s.add_parser('recovery-complete');done.add_argument('--db',required=True);done.add_argument('--job',required=True)
     sr=s.add_parser('supply-report');sr.add_argument('--db',required=True)
+    for name in ('dispatch-worker','dispatch-queue'):
+        command=s.add_parser(name);command.add_argument('file');command.add_argument('--db',required=True)
+    dt=s.add_parser('dispatch-tick');dt.add_argument('--db',required=True);dt.add_argument('--tick',type=int,required=True)
+    df=s.add_parser('dispatch-complete');df.add_argument('--db',required=True);df.add_argument('--task',required=True);df.add_argument('--worker',required=True);df.add_argument('--generation',type=int,required=True);df.add_argument('--tick',type=int,required=True);df.add_argument('--artifact',required=True)
+    rn=s.add_parser('dispatch-renew');rn.add_argument('--db',required=True);rn.add_argument('--task',required=True);rn.add_argument('--worker',required=True);rn.add_argument('--generation',type=int,required=True);rn.add_argument('--tick',type=int,required=True)
+    drp=s.add_parser('dispatch-report');drp.add_argument('--db',required=True)
     a=p.parse_args()
     if a.cmd=='demo':print(demo(a.workdir))
     elif a.cmd=='demo-decisions':print(decision_demo(a.workdir))
@@ -115,4 +122,10 @@ def main():
     elif a.cmd=='recovery-request':print(request_recovery(a.db,a.file))
     elif a.cmd=='recovery-complete':print(complete_recovery(a.db,a.job))
     elif a.cmd=='supply-report':print(json.dumps(supply_report(a.db),ensure_ascii=False,indent=2))
+    elif a.cmd=='dispatch-worker':print(json.dumps(register_dispatch_worker(a.db,a.file),ensure_ascii=False))
+    elif a.cmd=='dispatch-queue':print(json.dumps(queue_dispatch(a.db,a.file),ensure_ascii=False))
+    elif a.cmd=='dispatch-tick':print(json.dumps(dispatch_tick(a.db,a.tick),ensure_ascii=False))
+    elif a.cmd=='dispatch-complete':print(json.dumps(complete_dispatch(a.db,a.task,a.worker,a.generation,a.tick,a.artifact),ensure_ascii=False))
+    elif a.cmd=='dispatch-renew':print(json.dumps(renew_dispatch(a.db,a.task,a.worker,a.generation,a.tick),ensure_ascii=False))
+    elif a.cmd=='dispatch-report':print(json.dumps(dispatch_report(a.db),ensure_ascii=False,indent=2))
 if __name__=='__main__':main()

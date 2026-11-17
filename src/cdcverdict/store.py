@@ -42,6 +42,12 @@ CREATE TABLE IF NOT EXISTS feed_verdict(id INTEGER PRIMARY KEY, slot_id TEXT REF
 CREATE TABLE IF NOT EXISTS recovery_worker(id TEXT PRIMARY KEY, partition TEXT NOT NULL, capacity INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS recovery_job(id TEXT PRIMARY KEY, slot_id TEXT REFERENCES feed_slot(id), worker_id TEXT REFERENCES recovery_worker(id), priority INTEGER NOT NULL, units INTEGER NOT NULL, revision INTEGER NOT NULL, status TEXT NOT NULL, reason TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS recovery_event(id INTEGER PRIMARY KEY, job_id TEXT REFERENCES recovery_job(id), status TEXT NOT NULL, reason TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS dispatch_worker(id TEXT PRIMARY KEY,partition TEXT NOT NULL,capacity INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS dispatch_task(id TEXT PRIMARY KEY,job_id TEXT NOT NULL UNIQUE REFERENCES recovery_job(id),tenant TEXT NOT NULL,partition TEXT NOT NULL,lease_ticks INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'pending',generation INTEGER NOT NULL DEFAULT 0,worker_id TEXT REFERENCES dispatch_worker(id),expires_at INTEGER,artifact_sha TEXT);
+CREATE TABLE IF NOT EXISTS dispatch_clock(id INTEGER PRIMARY KEY CHECK(id=1),tick INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS dispatch_cursor(partition TEXT PRIMARY KEY,last_tenant TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS dispatch_event(id INTEGER PRIMARY KEY,task_id TEXT REFERENCES dispatch_task(id),tick INTEGER NOT NULL,action TEXT NOT NULL,worker_id TEXT,generation INTEGER NOT NULL,detail TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS dispatch_artifact(task_id TEXT PRIMARY KEY REFERENCES dispatch_task(id),source_sha TEXT NOT NULL,raw BLOB NOT NULL);
 """
 def connect(path):
     p=Path(path);p.parent.mkdir(parents=True,exist_ok=True)
